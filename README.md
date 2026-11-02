@@ -24,3 +24,10 @@ go build ./cmd/bundle-server
 
 `bundle-server config validate --config config.yaml` validates the server
 configuration before startup.
+
+## Scheduled actions
+
+Configure recurring work in `schedules` using Go duration intervals. Supported
+actions are `verify` for integrity checks, `collect_status` for pool status
+aggregation, and `cache_metadata` for refreshing the in-memory bundle metadata
+cache. Each action is executed through the server task queue.

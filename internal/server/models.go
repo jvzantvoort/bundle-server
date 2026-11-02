@@ -42,6 +42,13 @@ type bundleSummary struct {
 }
 
 func (a *App) bundles(poolName string) ([]bundleRecord, error) {
+	if cached, ok := a.cache.get(poolName); ok {
+		return cached, nil
+	}
+	return a.scanBundles(poolName)
+}
+
+func (a *App) scanBundles(poolName string) ([]bundleRecord, error) {
 	pool := a.config.Pools[poolName]
 	entries, err := os.ReadDir(pool.Root)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -65,6 +72,19 @@ func (a *App) bundles(poolName string) ([]bundleRecord, error) {
 		records = append(records, record)
 	}
 	return records, nil
+}
+
+func (a *App) refreshMetadata(poolName string) (int, error) {
+	records, err := a.scanBundles(poolName)
+	if err != nil {
+		return 0, err
+	}
+	a.cache.set(poolName, records)
+	return len(records), nil
+}
+
+func (a *App) invalidateMetadata(poolName string) {
+	a.cache.remove(poolName)
 }
 
 func (a *App) bundle(poolName, checksum string) (bundleRecord, error) {

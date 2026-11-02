@@ -3,13 +3,15 @@ package config
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/spf13/viper"
 )
 
 type Config struct {
-	Server ServerConfig          `mapstructure:"server"`
-	Pools  map[string]PoolConfig `mapstructure:"pools"`
+	Server    ServerConfig          `mapstructure:"server"`
+	Pools     map[string]PoolConfig `mapstructure:"pools"`
+	Schedules []ScheduleConfig      `mapstructure:"schedules"`
 }
 
 type ServerConfig struct {
@@ -30,6 +32,14 @@ type ServerConfig struct {
 type PoolConfig struct {
 	Root  string `mapstructure:"root"`
 	Title string `mapstructure:"title"`
+}
+
+type ScheduleConfig struct {
+	Name       string   `mapstructure:"name"`
+	Action     string   `mapstructure:"action"`
+	Interval   string   `mapstructure:"interval"`
+	Pools      []string `mapstructure:"pools"`
+	RunOnStart bool     `mapstructure:"run_on_start"`
 }
 
 func Load(path string) (Config, error) {
@@ -88,6 +98,28 @@ func (c Config) Validate() error {
 	for name, pool := range c.Pools {
 		if strings.TrimSpace(name) == "" || strings.TrimSpace(pool.Root) == "" {
 			return fmt.Errorf("every pool needs a name and root")
+		}
+	}
+	scheduleNames := make(map[string]struct{}, len(c.Schedules))
+	for _, schedule := range c.Schedules {
+		if strings.TrimSpace(schedule.Name) == "" {
+			return fmt.Errorf("schedule name is required")
+		}
+		if _, exists := scheduleNames[schedule.Name]; exists {
+			return fmt.Errorf("schedule names must be unique: %s", schedule.Name)
+		}
+		scheduleNames[schedule.Name] = struct{}{}
+		if schedule.Action != "verify" && schedule.Action != "collect_status" && schedule.Action != "cache_metadata" {
+			return fmt.Errorf("schedule %q has unsupported action %q", schedule.Name, schedule.Action)
+		}
+		interval, err := time.ParseDuration(schedule.Interval)
+		if err != nil || interval <= 0 {
+			return fmt.Errorf("schedule %q interval must be a positive Go duration", schedule.Name)
+		}
+		for _, pool := range schedule.Pools {
+			if _, exists := c.Pools[pool]; !exists {
+				return fmt.Errorf("schedule %q references unknown pool %q", schedule.Name, pool)
+			}
 		}
 	}
 	return nil

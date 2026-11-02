@@ -253,6 +253,7 @@ func (a *App) migrateBundle(w http.ResponseWriter, _ *http.Request, poolName, ch
 		writeError(w, http.StatusInternalServerError, "migration_failed", err.Error())
 		return
 	}
+	a.invalidateMetadata(poolName)
 	migrated, err := a.bundle(poolName, newChecksum)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "migration_failed", err.Error())

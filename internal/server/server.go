@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jvzantvoort/bundle-server/internal/config"
+	"github.com/jvzantvoort/bundle-server/internal/scheduler"
 	"github.com/jvzantvoort/bundle-server/internal/taskqueue"
 	bundlelib "github.com/jvzantvoort/bundle/bundle"
 	"github.com/jvzantvoort/bundle/checksum"
@@ -30,6 +31,7 @@ type App struct {
 	queue   taskqueue.Queue
 	spec    []byte
 	uploads *uploadManager
+	cache   metadataCache
 }
 
 func New(cfg config.Config, queue taskqueue.Queue, spec []byte) (*App, error) {
@@ -47,7 +49,7 @@ func New(cfg config.Config, queue taskqueue.Queue, spec []byte) (*App, error) {
 		apiURL = strings.TrimRight(cfg.Server.PublicURL, "/") + apiURL
 	}
 	renderedSpec := []byte(strings.ReplaceAll(string(spec), "https://{host}/api/v1", apiURL))
-	return &App{config: cfg, queue: queue, spec: renderedSpec, uploads: newUploadManager(cfg)}, nil
+	return &App{config: cfg, queue: queue, spec: renderedSpec, uploads: newUploadManager(cfg), cache: metadataCache{pools: make(map[string]cacheEntry)}}, nil
 }
 
 func (a *App) Handler() http.Handler {
@@ -66,6 +68,19 @@ func (a *App) Handler() http.Handler {
 
 func (a *App) apiPath(suffix string) string {
 	return strings.TrimRight(a.config.Server.APIPath(), "/") + "/" + strings.TrimLeft(suffix, "/")
+}
+
+func (a *App) StartSchedules(ctx context.Context) (*scheduler.Scheduler, error) {
+	jobs := make([]scheduler.Job, 0, len(a.config.Schedules))
+	for _, scheduleConfig := range a.config.Schedules {
+		interval, _ := time.ParseDuration(scheduleConfig.Interval)
+		scheduleConfig := scheduleConfig
+		jobs = append(jobs, scheduler.Job{
+			Name: scheduleConfig.Name, Interval: interval, RunOnStart: scheduleConfig.RunOnStart,
+			Run: func(ctx context.Context) { a.enqueueScheduledAction(ctx, scheduleConfig) },
+		})
+	}
+	return scheduler.Start(ctx, jobs)
 }
 
 func (a *App) withAuth(next http.HandlerFunc) http.HandlerFunc {
@@ -285,6 +300,7 @@ func (a *App) updateBundle(w http.ResponseWriter, r *http.Request, poolName, che
 		writeError(w, http.StatusInternalServerError, "bundle_update_failed", err.Error())
 		return
 	}
+	a.invalidateMetadata(poolName)
 	a.getBundle(w, r, poolName, checksum)
 }
 
@@ -379,6 +395,7 @@ func (a *App) tags(w http.ResponseWriter, r *http.Request, poolName, checksum st
 		writeError(w, http.StatusInternalServerError, "tag_update_failed", err.Error())
 		return
 	}
+	a.invalidateMetadata(poolName)
 	tags := record.Tags.List()
 	revision, _ := revision(record.Path)
 	w.Header().Set("ETag", revision)
@@ -396,6 +413,7 @@ func (a *App) enqueueVerify(w http.ResponseWriter, r *http.Request, poolName, ch
 		if err != nil {
 			return nil, err
 		}
+		a.invalidateMetadata(poolName)
 		return map[string]any{
 			"verified":        verified,
 			"checked_at":      time.Now().UTC(),

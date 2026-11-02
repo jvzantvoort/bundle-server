@@ -48,6 +48,11 @@ func newServeCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			schedules, err := app.StartSchedules(context.Background())
+			if err != nil {
+				return fmt.Errorf("start schedules: %w", err)
+			}
+			defer schedules.Stop()
 			httpServer := &http.Server{
 				Addr:              cfg.Server.Address,
 				Handler:           app.Handler(),

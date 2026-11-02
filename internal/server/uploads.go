@@ -249,6 +249,7 @@ func (a *App) completeUpload(w http.ResponseWriter, _ *http.Request, poolName, i
 		return
 	}
 	a.uploads.complete(id)
+	a.invalidateMetadata(poolName)
 	record, err := a.bundle(poolName, upload.Checksum)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "bundle_publish_failed", err.Error())

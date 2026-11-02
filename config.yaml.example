@@ -19,3 +19,17 @@ pools:
   default:
     root: /srv/bundles
     title: Default Bundle Pool
+
+# Schedules run through the in-process task queue. Intervals use Go duration
+# syntax, for example 15m, 6h, or 24h.
+schedules:
+  - name: nightly-integrity
+    action: verify
+    interval: 24h
+    pools: [default]
+    run_on_start: false
+  - name: metadata-cache
+    action: cache_metadata
+    interval: 15m
+    pools: [default]
+    run_on_start: true

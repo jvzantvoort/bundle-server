@@ -146,6 +146,20 @@ func TestConfiguredRoutesAndSwaggerSpec(t *testing.T) {
 	}
 }
 
+func TestCacheMetadataScheduleAction(t *testing.T) {
+	app, _ := testApp(t)
+	result, err := app.runScheduledAction("default", "cache_metadata")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.(map[string]int)["cached_bundles"] != 1 {
+		t.Fatalf("cached bundles = %d, want 1", result.(map[string]int)["cached_bundles"])
+	}
+	if _, ok := app.cache.get("default"); !ok {
+		t.Fatal("metadata cache was not populated")
+	}
+}
+
 const fileChecksum = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
 
 func testApp(t *testing.T) (*App, string) {
