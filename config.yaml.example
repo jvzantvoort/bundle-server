@@ -1,0 +1,21 @@
+server:
+  address: ":8080"
+  # Optional public origin used in the OpenAPI server URL, for example
+  # https://bundles.example.com. Leave empty to use a relative API URL.
+  public_url: ""
+  api_base_path: /api/v1
+  health_path: /api/v1/health
+  openapi_path: /openapi.yaml
+  swagger_path: /swagger/
+  # Set a token to require Authorization: Bearer <token> for API requests.
+  bearer_token: ""
+  task_workers: 1
+  max_manifest_entries: 100000
+  max_file_bytes: 10737418240
+  max_bundle_bytes: 1099511627776
+  upload_ttl_seconds: 86400
+
+pools:
+  default:
+    root: /srv/bundles
+    title: Default Bundle Pool

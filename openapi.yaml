@@ -1,0 +1,1392 @@
+openapi: 3.1.0
+info:
+  title: Bundle Server API
+  version: 1.0.0
+  description: |
+    HTTP API for storing and querying Bundle content-addressed file bundles.
+
+    A bundle is immutable with respect to its files and manifest. Its identifier is
+    the SHA-256 checksum of the version 2 manifest, which covers each file path and
+    checksum. Titles and tags are mutable and do not affect that identifier.
+
+    To publish a bundle, create an upload session with its manifest, upload every
+    declared file, then complete the session. The server verifies file checksums and
+    publishes the bundle atomically at `/pools/{pool}/bundles/{checksum}`.
+  license:
+    name: MIT
+    url: https://github.com/jvzantvoort/bundle/blob/main/LICENSE
+servers:
+  - url: https://{host}/api/v1
+    variables:
+      host:
+        default: development.int.vanzantvoort.org
+        description: Bundle Server host name
+security:
+  - BearerAuth: []
+tags:
+  - name: Health
+  - name: Pools
+  - name: Bundles
+  - name: Files
+  - name: Tags
+  - name: Uploads
+  - name: Statistics
+  - name: Tasks
+
+paths:
+  /health:
+    get:
+      tags: [Health]
+      operationId: getHealth
+      summary: Check service health
+      security: []
+      responses:
+        '200':
+          description: The service is available.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /capabilities:
+    get:
+      tags: [Health]
+      operationId: getCapabilities
+      summary: Get server capabilities and upload limits
+      description: |
+        Allows clients to discover compatible bundle formats and server-enforced
+        limits before beginning an upload. Pool roots and other host filesystem
+        details are intentionally not exposed.
+      responses:
+        '200':
+          description: Server capabilities.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Capabilities'
+
+  /tasks/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          minLength: 1
+    get:
+      tags: [Tasks]
+      operationId: getTask
+      summary: Get the status of an asynchronous task
+      responses:
+        '200':
+          description: Task status and, when finished, result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /pools:
+    get:
+      tags: [Pools]
+      operationId: listPools
+      summary: List configured storage pools
+      responses:
+        '200':
+          description: Configured pools.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [pools]
+                properties:
+                  pools:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Pool'
+
+  /pools/{pool}:
+    parameters:
+      - $ref: '#/components/parameters/PoolName'
+    get:
+      tags: [Pools]
+      operationId: getPool
+      summary: Get a storage pool
+      responses:
+        '200':
+          description: Pool details.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Pool'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /pools/{pool}/bundles:
+    parameters:
+      - $ref: '#/components/parameters/PoolName'
+    get:
+      tags: [Bundles]
+      operationId: listBundles
+      summary: List bundles in a pool
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: title
+          in: query
+          description: Case-insensitive substring matched against bundle titles.
+          schema:
+            type: string
+            maxLength: 256
+        - name: tag
+          in: query
+          description: Return only bundles containing this exact tag.
+          schema:
+            $ref: '#/components/schemas/Tag'
+        - name: author
+          in: query
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 256
+        - name: verified
+          in: query
+          schema:
+            type: boolean
+        - name: sort
+          in: query
+          description: Sort field. Prefix with `-` for descending order.
+          schema:
+            type: string
+            enum: [title, -title, created_at, -created_at]
+            default: title
+      responses:
+        '200':
+          description: A page of bundles.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BundlePage'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /pools/{pool}/bundles/query:
+    parameters:
+      - $ref: '#/components/parameters/PoolName'
+    post:
+      tags: [Bundles]
+      operationId: queryBundles
+      summary: Query bundles by file, checksum, or metadata
+      description: |
+        Returns bundles matching every supplied filter. File predicates search
+        manifest entries across the pool; matching entries are included in each
+        result so clients can identify the file that caused the match. Omit
+        `file` to query bundle metadata only.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BundleQueryRequest'
+      responses:
+        '200':
+          description: A page of matching bundles and manifest entries.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BundleQueryPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /pools/{pool}/stats:
+    parameters:
+      - $ref: '#/components/parameters/PoolName'
+    get:
+      tags: [Statistics]
+      operationId: getPoolStats
+      summary: Get pool storage and integrity statistics
+      description: |
+        Returns a snapshot of published bundles only; incomplete upload sessions
+        are excluded. Integrity counts reflect each bundle's most recently
+        persisted verification state and do not trigger verification.
+      responses:
+        '200':
+          description: Pool statistics snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PoolStats'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /pools/{pool}/bundles/{checksum}:
+    parameters:
+      - $ref: '#/components/parameters/PoolName'
+      - $ref: '#/components/parameters/BundleChecksum'
+    get:
+      tags: [Bundles]
+      operationId: getBundle
+      summary: Get bundle metadata, state, tags, and manifest summary
+      responses:
+        '200':
+          description: Bundle details.
+          headers:
+            ETag:
+              $ref: '#/components/headers/BundleRevision'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Bundle'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Bundles]
+      operationId: updateBundle
+      summary: Update mutable bundle metadata
+      description: Only the human-readable title can be changed. File contents, manifest, author, creation time, and checksum remain unchanged.
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateBundleRequest'
+      responses:
+        '200':
+          description: Updated bundle.
+          headers:
+            ETag:
+              $ref: '#/components/headers/BundleRevision'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Bundle'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+
+  /pools/{pool}/bundles/{checksum}/files:
+    parameters:
+      - $ref: '#/components/parameters/PoolName'
+      - $ref: '#/components/parameters/BundleChecksum'
+    get:
+      tags: [Files]
+      operationId: listBundleFiles
+      summary: List the bundle manifest
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: A page of manifest entries.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FilePage'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /pools/{pool}/bundles/{checksum}/files/{filePath}:
+    parameters:
+      - $ref: '#/components/parameters/PoolName'
+      - $ref: '#/components/parameters/BundleChecksum'
+      - $ref: '#/components/parameters/FilePath'
+    get:
+      tags: [Files]
+      operationId: downloadBundleFile
+      summary: Download a bundle file
+      description: Supports standard HTTP byte range requests for resumable downloads.
+      parameters:
+        - name: Range
+          in: header
+          required: false
+          description: Requested byte range, for example `bytes=0-1048575`.
+          schema:
+            type: string
+            pattern: '^bytes=\d*-\d*$'
+      responses:
+        '200':
+          description: File bytes. `ETag` is the file SHA-256 checksum.
+          headers:
+            ETag:
+              schema:
+                type: string
+                pattern: '^[a-f0-9]{64}$'
+            Content-SHA256:
+              schema:
+                type: string
+                pattern: '^[a-f0-9]{64}$'
+            Accept-Ranges:
+              schema:
+                type: string
+                const: bytes
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '206':
+          description: Requested byte range.
+          headers:
+            ETag:
+              schema:
+                type: string
+                pattern: '^[a-f0-9]{64}$'
+            Content-SHA256:
+              schema:
+                type: string
+                pattern: '^[a-f0-9]{64}$'
+            Content-Range:
+              schema:
+                type: string
+                example: bytes 0-1048575/157286400
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '416':
+          description: Requested byte range is unsatisfiable.
+          headers:
+            Content-Range:
+              schema:
+                type: string
+                example: bytes */157286400
+
+  /pools/{pool}/bundles/{checksum}/verify:
+    parameters:
+      - $ref: '#/components/parameters/PoolName'
+      - $ref: '#/components/parameters/BundleChecksum'
+    post:
+      tags: [Bundles]
+      operationId: verifyBundle
+      summary: Verify bundle file and manifest integrity
+      description: |
+        Queues a verification task that recomputes every file checksum, checks the
+        manifest-derived bundle checksum, and persists the resulting verification
+        state. An invalid bundle is a completed task with `verified: false`, not a
+        task failure.
+      responses:
+        '202':
+          description: Verification task accepted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Task'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /pools/{pool}/bundles/{checksum}/tags:
+    parameters:
+      - $ref: '#/components/parameters/PoolName'
+      - $ref: '#/components/parameters/BundleChecksum'
+    get:
+      tags: [Tags]
+      operationId: listBundleTags
+      summary: List sorted bundle tags
+      responses:
+        '200':
+          description: Bundle tags.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tags'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [Tags]
+      operationId: addBundleTags
+      summary: Add tags to a bundle
+      description: Adds unique tags and returns the complete sorted tag set.
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModifyTagsRequest'
+      responses:
+        '200':
+          description: Updated tags.
+          headers:
+            ETag:
+              $ref: '#/components/headers/BundleRevision'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tags'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+    delete:
+      tags: [Tags]
+      operationId: removeBundleTags
+      summary: Remove tags from a bundle
+      description: Removing a tag that is not present is successful.
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModifyTagsRequest'
+      responses:
+        '200':
+          description: Updated tags.
+          headers:
+            ETag:
+              $ref: '#/components/headers/BundleRevision'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tags'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+
+  /pools/{pool}/bundles/{checksum}/migrate:
+    parameters:
+      - $ref: '#/components/parameters/PoolName'
+      - $ref: '#/components/parameters/BundleChecksum'
+    post:
+      tags: [Bundles]
+      operationId: migrateBundle
+      summary: Migrate a legacy version 1 bundle
+      description: |
+        Upgrades a version 1 bundle to version 2. Because version 2 includes paths
+        in the content checksum, a successful migration can assign a new checksum
+        and therefore a new resource URL. Version 2 bundles return `status: current`.
+      responses:
+        '200':
+          description: Migration completed or was not needed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MigrationResult'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: The destination checksum is already present or migration cannot be safely completed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          description: The legacy bundle is corrupt and cannot be migrated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /pools/{pool}/uploads:
+    parameters:
+      - $ref: '#/components/parameters/PoolName'
+    post:
+      tags: [Uploads]
+      operationId: createUpload
+      summary: Start a bundle upload
+      description: |
+        Registers a complete manifest before any bytes are accepted. `checksum` must
+        be the deterministic version 2 SHA-256 checksum of the sorted manifest.
+        A duplicate completed bundle returns `409`; clients may then use the
+        existing bundle resource.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUploadRequest'
+      responses:
+        '201':
+          description: Upload session created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Upload'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: A bundle with this checksum already exists or an upload for it is active.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /pools/{pool}/uploads/{uploadId}:
+    parameters:
+      - $ref: '#/components/parameters/PoolName'
+      - $ref: '#/components/parameters/UploadId'
+    get:
+      tags: [Uploads]
+      operationId: getUpload
+      summary: Get upload status
+      responses:
+        '200':
+          description: Upload session.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Upload'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Uploads]
+      operationId: cancelUpload
+      summary: Cancel an incomplete upload
+      responses:
+        '204':
+          description: Upload cancelled.
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: The upload has already been completed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /pools/{pool}/uploads/{uploadId}/files/{filePath}:
+    parameters:
+      - $ref: '#/components/parameters/PoolName'
+      - $ref: '#/components/parameters/UploadId'
+      - $ref: '#/components/parameters/FilePath'
+    put:
+      tags: [Uploads]
+      operationId: uploadFile
+      summary: Upload one manifest-declared file
+      description: |
+        `filePath` must be percent-encoded as one path parameter (for example,
+        `photos%2Fimage.jpg`). The path must exactly match a manifest entry. The
+        server validates the uploaded bytes against that entry's SHA-256 checksum.
+      parameters:
+        - name: Content-SHA256
+          in: header
+          required: true
+          description: SHA-256 checksum of the request body, in lowercase hexadecimal.
+          schema:
+            $ref: '#/components/schemas/Checksum'
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '204':
+          description: File accepted and checksum verified.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: The file is already accepted or the upload is no longer writable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          description: Body checksum does not match the manifest entry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /pools/{pool}/uploads/{uploadId}/complete:
+    parameters:
+      - $ref: '#/components/parameters/PoolName'
+      - $ref: '#/components/parameters/UploadId'
+    post:
+      tags: [Uploads]
+      operationId: completeUpload
+      summary: Verify and atomically publish an upload
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '201':
+          description: Bundle published.
+          headers:
+            Location:
+              description: Canonical URL of the published bundle.
+              schema:
+                type: string
+                format: uri-reference
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Bundle'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: One or more manifest files are missing, or the bundle already exists.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '422':
+          description: The manifest checksum or uploaded file content could not be verified.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+components:
+  parameters:
+    PoolName:
+      name: pool
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$'
+      example: default
+    BundleChecksum:
+      name: checksum
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/Checksum'
+    UploadId:
+      name: uploadId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    FilePath:
+      name: filePath
+      in: path
+      required: true
+      allowReserved: true
+      description: Percent-encoded relative path from the bundle root. It must not be absolute or contain `.` or `..` path segments.
+      schema:
+        $ref: '#/components/schemas/RelativeFilePath'
+    Page:
+      name: page
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    PageSize:
+      name: page_size
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 50
+    IfMatch:
+      name: If-Match
+      in: header
+      required: true
+      description: Strong ETag returned by the latest bundle or tag response.
+      schema:
+        $ref: '#/components/schemas/BundleRevision'
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: |
+        Client-generated key that makes a retried write request safe. The same key
+        with a different request body returns `409`.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 255
+
+  responses:
+    BadRequest:
+      description: The request is syntactically valid JSON but violates the API contract.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: The requested pool, bundle, upload, or file does not exist.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    ServiceUnavailable:
+      description: The service cannot reach its storage backend.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    PreconditionFailed:
+      description: The bundle changed after the ETag supplied in `If-Match` was read.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  headers:
+    BundleRevision:
+      description: Strong ETag for mutable bundle metadata and tags.
+      schema:
+        $ref: '#/components/schemas/BundleRevision'
+
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Send an access token in `Authorization: Bearer <token>`. Deployments
+        authorize requests per pool and operation; `/health` is public.
+
+  schemas:
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          const: ok
+
+    Capabilities:
+      type: object
+      required: [api_version, server_version, bundle_versions, checksum_algorithms, upload_limits]
+      properties:
+        api_version:
+          type: string
+          const: 1.0.0
+        server_version:
+          type: string
+          example: 1.0.0
+        bundle_versions:
+          type: array
+          minItems: 1
+          items:
+            type: integer
+            enum: [1, 2]
+          example: [2]
+        checksum_algorithms:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            const: sha256
+        upload_limits:
+          type: object
+          required: [max_manifest_entries, max_file_bytes, max_bundle_bytes, upload_ttl_seconds]
+          properties:
+            max_manifest_entries:
+              type: integer
+              minimum: 1
+            max_file_bytes:
+              type: integer
+              minimum: 1
+              format: int64
+            max_bundle_bytes:
+              type: integer
+              minimum: 1
+              format: int64
+            upload_ttl_seconds:
+              type: integer
+              minimum: 1
+
+    Task:
+      type: object
+      required: [id, type, status, created_at]
+      properties:
+        id:
+          type: string
+          example: task-1
+        type:
+          type: string
+          const: verify
+        status:
+          type: string
+          enum: [queued, running, done, failed]
+        created_at:
+          type: string
+          format: date-time
+        started_at:
+          type: string
+          format: date-time
+        finished_at:
+          type: string
+          format: date-time
+        result:
+          $ref: '#/components/schemas/VerificationResult'
+        error:
+          type: string
+
+    Checksum:
+      type: string
+      description: Lowercase hexadecimal SHA-256 digest.
+      pattern: '^[a-f0-9]{64}$'
+      example: a1b2c3d4e5f6789012345678901234567890123456789012345678901234567
+
+    BundleRevision:
+      type: string
+      description: Strong ETag for a bundle's mutable metadata and tags.
+      pattern: '^"[A-Za-z0-9._-]+"$'
+      example: '"9f7a3d2c"'
+
+    RelativeFilePath:
+      type: string
+      minLength: 1
+      maxLength: 4096
+      pattern: '^(?!/)(?!.*(?:^|/)\.{1,2}(?:/|$))(?!\.bundle(?:/|$)).+$'
+      example: photos/IMG_001.jpg
+
+    Tag:
+      type: string
+      minLength: 1
+      maxLength: 64
+      pattern: '^[^\r\n]+$'
+      example: travel
+
+    Pool:
+      type: object
+      required: [name, title]
+      properties:
+        name:
+          type: string
+          example: default
+        title:
+          type: string
+          example: Default Bundle Pool
+        bundle_count:
+          type: integer
+          minimum: 0
+          readOnly: true
+          example: 42
+
+    BundleMetadata:
+      type: object
+      required: [title, created_at, author, version]
+      properties:
+        title:
+          type: string
+          maxLength: 256
+          example: Iceland Vacation 2024
+        created_at:
+          type: string
+          format: date-time
+        author:
+          type: string
+          minLength: 1
+          maxLength: 256
+          example: jvzantvoort
+        version:
+          type: integer
+          enum: [1, 2]
+          description: Version 2 is the current checksum algorithm.
+          example: 2
+
+    BundleState:
+      type: object
+      required: [verified, size_bytes, replicas]
+      properties:
+        verified:
+          type: boolean
+        last_checked:
+          type: [string, 'null']
+          format: date-time
+        replicas:
+          type: array
+          items:
+            type: string
+            format: uri-reference
+        size_bytes:
+          type: integer
+          minimum: 0
+          format: int64
+
+    ManifestEntry:
+      type: object
+      required: [path, checksum, size_bytes]
+      properties:
+        path:
+          $ref: '#/components/schemas/RelativeFilePath'
+        checksum:
+          $ref: '#/components/schemas/Checksum'
+        size_bytes:
+          type: integer
+          minimum: 0
+          format: int64
+
+    BundleSummary:
+      type: object
+      required: [checksum, title, author, created_at, version, file_count, size_bytes, verified]
+      properties:
+        checksum:
+          $ref: '#/components/schemas/Checksum'
+        title:
+          type: string
+        author:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        version:
+          type: integer
+          enum: [1, 2]
+        file_count:
+          type: integer
+          minimum: 0
+        size_bytes:
+          type: integer
+          minimum: 0
+          format: int64
+        verified:
+          type: boolean
+
+    Bundle:
+      allOf:
+        - $ref: '#/components/schemas/BundleSummary'
+        - type: object
+          required: [metadata, state, tags, revision]
+          properties:
+            metadata:
+              $ref: '#/components/schemas/BundleMetadata'
+            state:
+              $ref: '#/components/schemas/BundleState'
+            tags:
+              type: array
+              uniqueItems: true
+              items:
+                $ref: '#/components/schemas/Tag'
+            revision:
+              $ref: '#/components/schemas/BundleRevision'
+            links:
+              type: object
+              readOnly: true
+              required: [self, files]
+              properties:
+                self:
+                  type: string
+                  format: uri-reference
+                files:
+                  type: string
+                  format: uri-reference
+
+    BundlePage:
+      type: object
+      required: [items, page, page_size, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/BundleSummary'
+        page:
+          type: integer
+          minimum: 1
+        page_size:
+          type: integer
+          minimum: 1
+        total:
+          type: integer
+          minimum: 0
+
+    FilePage:
+      type: object
+      required: [items, page, page_size, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ManifestEntry'
+        page:
+          type: integer
+          minimum: 1
+        page_size:
+          type: integer
+          minimum: 1
+        total:
+          type: integer
+          minimum: 0
+
+    FileQuery:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        path:
+          type: string
+          minLength: 1
+          maxLength: 4096
+          description: File path query value.
+          example: IMG_001.jpg
+        path_match:
+          type: string
+          enum: [exact, contains, prefix, suffix]
+          default: contains
+        checksum:
+          $ref: '#/components/schemas/Checksum'
+
+    BundleQueryRequest:
+      type: object
+      additionalProperties: false
+      description: All supplied filters are combined with AND.
+      anyOf:
+        - required: [checksums]
+        - required: [title]
+        - required: [author]
+        - required: [tags]
+        - required: [verified]
+        - required: [created_after]
+        - required: [created_before]
+        - required: [min_size_bytes]
+        - required: [max_size_bytes]
+        - required: [file]
+      properties:
+        checksums:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          description: Return only these bundle checksums.
+          items:
+            $ref: '#/components/schemas/Checksum'
+        title:
+          type: string
+          minLength: 1
+          maxLength: 256
+          description: Case-insensitive substring matched against bundle titles.
+        author:
+          type: string
+          minLength: 1
+          maxLength: 256
+        tags:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          description: Bundle must contain every supplied tag.
+          items:
+            $ref: '#/components/schemas/Tag'
+        verified:
+          type: boolean
+        created_after:
+          type: string
+          format: date-time
+          description: Include bundles created at or after this timestamp.
+        created_before:
+          type: string
+          format: date-time
+          description: Include bundles created before this timestamp.
+        min_size_bytes:
+          type: integer
+          minimum: 0
+          format: int64
+        max_size_bytes:
+          type: integer
+          minimum: 0
+          format: int64
+        file:
+          $ref: '#/components/schemas/FileQuery'
+        page:
+          type: integer
+          minimum: 1
+          default: 1
+        page_size:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 50
+        sort:
+          type: string
+          enum: [title, -title, created_at, -created_at, size_bytes, -size_bytes]
+          default: title
+
+    BundleQueryResult:
+      type: object
+      required: [bundle, matching_files]
+      properties:
+        bundle:
+          $ref: '#/components/schemas/BundleSummary'
+        matching_files:
+          type: array
+          description: Manifest entries that matched `file`; empty when no file filter was supplied.
+          items:
+            $ref: '#/components/schemas/ManifestEntry'
+
+    BundleQueryPage:
+      type: object
+      required: [items, page, page_size, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/BundleQueryResult'
+        page:
+          type: integer
+          minimum: 1
+        page_size:
+          type: integer
+          minimum: 1
+        total:
+          type: integer
+          minimum: 0
+          description: Number of bundles matching the query.
+
+    PoolStats:
+      type: object
+      required: [pool, generated_at, storage, integrity]
+      properties:
+        pool:
+          type: string
+          example: default
+        generated_at:
+          type: string
+          format: date-time
+        storage:
+          type: object
+          required: [bundle_count, file_count, content_bytes, metadata_bytes, total_bytes]
+          properties:
+            bundle_count:
+              type: integer
+              minimum: 0
+            file_count:
+              type: integer
+              minimum: 0
+            content_bytes:
+              type: integer
+              minimum: 0
+              format: int64
+              description: Sum of bytes in manifest-declared files.
+            metadata_bytes:
+              type: integer
+              minimum: 0
+              format: int64
+              description: Bytes used by `.bundle` metadata files.
+            total_bytes:
+              type: integer
+              minimum: 0
+              format: int64
+              description: Content and metadata bytes, excluding filesystem allocation overhead.
+            filesystem_capacity_bytes:
+              type: integer
+              minimum: 0
+              format: int64
+              description: Total capacity of the filesystem hosting the pool, when available.
+            filesystem_available_bytes:
+              type: integer
+              minimum: 0
+              format: int64
+              description: Available bytes on the filesystem hosting the pool, when available.
+        integrity:
+          type: object
+          required: [verified_bundles, failed_bundles, unchecked_bundles, last_verified_at]
+          properties:
+            verified_bundles:
+              type: integer
+              minimum: 0
+              description: Bundles whose latest verification passed.
+            failed_bundles:
+              type: integer
+              minimum: 0
+              description: Bundles whose latest verification failed.
+            unchecked_bundles:
+              type: integer
+              minimum: 0
+              description: Bundles with no completed verification.
+            last_verified_at:
+              type: string
+              format: date-time
+              nullable: true
+              description: Most recent completed verification in the pool.
+
+    UpdateBundleRequest:
+      type: object
+      additionalProperties: false
+      required: [title]
+      properties:
+        title:
+          type: string
+          maxLength: 256
+          example: Iceland Trip 2024
+
+    Tags:
+      type: object
+      required: [tags, total]
+      properties:
+        tags:
+          type: array
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/Tag'
+        total:
+          type: integer
+          minimum: 0
+
+    ModifyTagsRequest:
+      type: object
+      additionalProperties: false
+      required: [tags]
+      properties:
+        tags:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/Tag'
+
+    VerificationResult:
+      type: object
+      required: [verified, checked_at, files_checked, corrupted_files]
+      properties:
+        verified:
+          type: boolean
+        checked_at:
+          type: string
+          format: date-time
+        files_checked:
+          type: integer
+          minimum: 0
+        corrupted_files:
+          type: array
+          items:
+            type: object
+            required: [path, reason]
+            properties:
+              path:
+                type: string
+              reason:
+                type: string
+                enum: [missing, checksum_mismatch, unlisted, manifest_checksum_mismatch]
+              expected:
+                allOf:
+                  - $ref: '#/components/schemas/Checksum'
+                nullable: true
+              actual:
+                allOf:
+                  - $ref: '#/components/schemas/Checksum'
+                nullable: true
+
+    MigrationResult:
+      type: object
+      required: [status, checksum, version]
+      properties:
+        status:
+          type: string
+          enum: [migrated, current]
+        checksum:
+          $ref: '#/components/schemas/Checksum'
+        version:
+          type: integer
+          const: 2
+        bundle:
+          $ref: '#/components/schemas/Bundle'
+
+    CreateUploadRequest:
+      type: object
+      additionalProperties: false
+      required: [checksum, metadata, files]
+      properties:
+        checksum:
+          allOf:
+            - $ref: '#/components/schemas/Checksum'
+          description: Version 2 checksum calculated from the sorted manifest.
+        metadata:
+          allOf:
+            - $ref: '#/components/schemas/BundleMetadata'
+            - type: object
+              properties:
+                version:
+                  const: 2
+        tags:
+          type: array
+          uniqueItems: true
+          default: []
+          items:
+            $ref: '#/components/schemas/Tag'
+        files:
+          type: array
+          minItems: 1
+          description: Every path must be unique; paths are sorted byte-wise when calculating `checksum`.
+          items:
+            $ref: '#/components/schemas/ManifestEntry'
+
+    Upload:
+      type: object
+      required: [id, pool, checksum, status, file_count, uploaded_file_count, created_at, expires_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        pool:
+          type: string
+        checksum:
+          $ref: '#/components/schemas/Checksum'
+        status:
+          type: string
+          enum: [open, complete, cancelled, expired]
+        file_count:
+          type: integer
+          minimum: 0
+        uploaded_file_count:
+          type: integer
+          minimum: 0
+        uploaded_bytes:
+          type: integer
+          minimum: 0
+          format: int64
+        missing_files:
+          type: array
+          items:
+            $ref: '#/components/schemas/RelativeFilePath'
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        links:
+          type: object
+          readOnly: true
+          required: [self, complete]
+          properties:
+            self:
+              type: string
+              format: uri-reference
+            complete:
+              type: string
+              format: uri-reference
+
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          example: bundle_not_found
+        message:
+          type: string
+          example: No bundle with checksum 3a... exists in pool default.
+        details:
+          type: array
+          items:
+            type: object
+            required: [field, message]
+            properties:
+              field:
+                type: string
+              message:
+                type: string
