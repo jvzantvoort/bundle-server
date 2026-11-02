@@ -22,7 +22,18 @@ func TestBundleEndpoints(t *testing.T) {
 	app, checksum := testApp(t)
 	handler := app.Handler()
 
-	response := request(t, handler, http.MethodGet, "/api/v1/pools/default/bundles", nil)
+	response := request(t, handler, http.MethodGet, "/default/"+checksum+"/hello.txt", nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("serve bundle file status = %d, want %d: %s", response.Code, http.StatusOK, response.Body.String())
+	}
+	if contentType := response.Header().Get("Content-Type"); !strings.HasPrefix(contentType, "text/plain") {
+		t.Fatalf("serve bundle file content type = %q, want text/plain", contentType)
+	}
+	if response.Body.String() != "hello" {
+		t.Fatalf("serve bundle file body = %q, want %q", response.Body.String(), "hello")
+	}
+
+	response = request(t, handler, http.MethodGet, "/api/v1/pools/default/bundles", nil)
 	if response.Code != http.StatusOK {
 		t.Fatalf("list bundles status = %d, want %d", response.Code, http.StatusOK)
 	}

@@ -16,10 +16,10 @@ info:
     name: MIT
     url: https://github.com/jvzantvoort/bundle/blob/main/LICENSE
 servers:
-  - url: https://{host}/api/v1
+  - url: http://{host}/api/v1
     variables:
       host:
-        default: development.int.vanzantvoort.org
+        default: development.int.vanzantvoort.org:3110
         description: Bundle Server host name
 security:
   - BearerAuth: []

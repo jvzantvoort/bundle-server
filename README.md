@@ -1,3 +1,10 @@
+[![forthebadge](https://forthebadge.com/images/badges/made-with-crayons.svg)](https://forthebadge.com)
+[![forthebadge](https://forthebadge.com/images/badges/designed-in-etch-a-sketch.svg)](https://forthebadge.com)
+[![forthebadge](https://forthebadge.com/images/badges/you-didnt-ask-for-this.svg)](https://forthebadge.com)
+
+**CAUTION**: this is a project with which I'm investigating using AI
+as a tool for coding. All of this code is generated.
+
 # Bundle Server
 
 Bundle Server provides an HTTP API and Swagger UI for Bundle content-addressed

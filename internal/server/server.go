@@ -63,7 +63,18 @@ func (a *App) Handler() http.Handler {
 	mux.HandleFunc("GET "+api+"/pools/{pool}", a.withAuth(a.getPool))
 	mux.HandleFunc(api+"/pools/{pool}/", a.withAuth(a.poolRoutes))
 	mux.HandleFunc("GET "+api+"/tasks/{id}", a.withAuth(a.getTask))
-	return mux
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && !strings.HasPrefix(r.URL.Path, api+"/") {
+			parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/"), "/")
+			if len(parts) >= 3 {
+				if _, ok := a.config.Pools[parts[0]]; ok {
+					a.serveBundleFile(w, r, parts[0], parts[1], strings.Join(parts[2:], "/"))
+					return
+				}
+			}
+		}
+		mux.ServeHTTP(w, r)
+	})
 }
 
 func (a *App) apiPath(suffix string) string {
@@ -108,6 +119,10 @@ func (a *App) swagger(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	page := strings.ReplaceAll(string(swaggerHTML), "__OPENAPI_URL__", a.config.Server.OpenAPIURL())
 	_, _ = w.Write([]byte(page))
+}
+
+func (a *App) serveBundleFile(w http.ResponseWriter, r *http.Request, poolName, checksum, filePath string) {
+	a.downloadFile(w, r, poolName, checksum, filePath)
 }
 
 func (a *App) capabilities(w http.ResponseWriter, _ *http.Request) {
