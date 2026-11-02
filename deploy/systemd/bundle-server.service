@@ -1,0 +1,23 @@
+[Unit]
+Description=Bundle Server
+Documentation=https://github.com/jvzantvoort/bundle-server
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=bundle-server
+Group=bundle-server
+ExecStart=/usr/local/bin/bundle-server serve --config /etc/bundle-server/config.yaml --openapi /usr/share/bundle-server/openapi.yaml
+Restart=on-failure
+RestartSec=5s
+UMask=0027
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/srv/bundles
+
+[Install]
+WantedBy=multi-user.target
