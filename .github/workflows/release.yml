@@ -2,26 +2,38 @@ name: Release
 
 on:
   push:
-    tags: ['v*']
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
   release:
     name: Build and publish release
+    needs: ci
     runs-on: ubuntu-latest
+    permissions:
+      contents: write  # to create the release and upload its assets
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@v7
+          persist-credentials: false
+
+      - name: Set up Go
+        # The current Go, so that the binaries carry its security fixes
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.24.5'
-          cache: true
-      - uses: goreleaser/goreleaser-action@v7
+          go-version: stable
+
+      - name: Publish release
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
         with:
-          distribution: goreleaser
           version: '~> v2'
           args: release --clean
         env:
