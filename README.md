@@ -58,13 +58,6 @@ sudo systemctl enable --now bundle-server
 sudo systemctl status bundle-server
 ```
 
-## Scheduled actions
-
-Configure recurring work in `schedules` using Go duration intervals. Supported
-actions are `verify` for integrity checks, `collect_status` for pool status
-aggregation, and `cache_metadata` for refreshing the in-memory bundle metadata
-cache. Each action is executed through the server task queue.
-
 ## Resumable uploads
 
 Upload sessions are stored in the pool root next to their staging directory
@@ -74,3 +67,10 @@ same `Idempotency-Key` and request body returns the existing session, whose
 `missing_files` lists what still needs to be sent; the same key with a different
 body returns `409`. At startup, expired sessions and partially written files are
 removed. `bundle push` uses this to continue an interrupted push.
+
+## Scheduled actions
+
+Configure recurring work in `schedules` using Go duration intervals. Supported
+actions are `verify` for integrity checks, `collect_status` for pool status
+aggregation, and `cache_metadata` for refreshing the in-memory bundle metadata
+cache. Each action is executed through the server task queue.
