@@ -24,10 +24,17 @@ The Swagger UI is available at the configured `server.swagger_path` (default
 ## Development
 
 ```bash
-go test ./...
+go test -race ./...
 go vet ./...
 go build ./cmd/bundle-server
 ```
+
+CI runs these on Linux, macOS and Windows with the current Go, and on Linux
+with the oldest Go that `go.mod` allows. It also checks `gofmt -s`, that
+`go.mod` and `go.sum` are tidy, and the GoReleaser configuration, and runs
+`govulncheck`. It runs weekly as well, to catch new vulnerabilities. A release
+tag (`vX.Y.Z`) is only published after CI passes, and is built with the
+current Go.
 
 `bundle-server config validate --config config.yaml` validates the server
 configuration before startup.
