@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jvzantvoort/bundle-server/internal/config"
@@ -32,6 +33,9 @@ type App struct {
 	spec    []byte
 	uploads *uploadManager
 	cache   metadataCache
+	// writeMu serializes changes to bundle metadata and tags, so that the
+	// If-Match check and the write cannot interleave with another change
+	writeMu sync.Mutex
 }
 
 func New(cfg config.Config, queue taskqueue.Queue, spec []byte) (*App, error) {
@@ -131,7 +135,7 @@ func (a *App) serveBundleFile(w http.ResponseWriter, r *http.Request, poolName, 
 
 func (a *App) capabilities(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"api_version":         "1.0.0",
+		"api_version":         apiVersion,
 		"server_version":      "dev",
 		"bundle_versions":     []int{2},
 		"checksum_algorithms": []string{"sha256"},
@@ -192,6 +196,10 @@ func (a *App) poolRoutes(w http.ResponseWriter, r *http.Request) {
 		a.queryBundles(w, r, poolName)
 	case suffix == "stats" && r.Method == http.MethodGet:
 		a.stats(w, r, poolName)
+	case suffix == "tags" && r.Method == http.MethodGet:
+		a.listPoolTags(w, r, poolName)
+	case strings.HasPrefix(suffix, "tags/") && !strings.Contains(strings.TrimPrefix(suffix, "tags/"), "/"):
+		a.changePoolTag(w, r, poolName, strings.TrimPrefix(suffix, "tags/"))
 	case suffix == "uploads" && r.Method == http.MethodPost:
 		a.createUpload(w, r, poolName)
 	case strings.HasPrefix(suffix, "uploads/"):
@@ -233,7 +241,16 @@ func (a *App) bundleRoutes(w http.ResponseWriter, r *http.Request, poolName, suf
 		}
 		a.downloadFile(w, r, poolName, checksum, strings.Join(parts[2:], "/"))
 	case "tags":
-		a.tags(w, r, poolName, checksum)
+		switch {
+		case len(parts) == 2:
+			a.bundleTags(w, r, poolName, checksum)
+		case len(parts) == 3 && r.Method == http.MethodPut:
+			a.renameBundleTag(w, r, poolName, checksum, parts[2])
+		case len(parts) == 3:
+			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method is not allowed")
+		default:
+			writeError(w, http.StatusNotFound, "not_found", "resource does not exist")
+		}
 	case "verify":
 		if r.Method != http.MethodPost {
 			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method is not allowed")
@@ -299,6 +316,8 @@ func (a *App) getBundle(w http.ResponseWriter, _ *http.Request, poolName, checks
 }
 
 func (a *App) updateBundle(w http.ResponseWriter, r *http.Request, poolName, checksum string) {
+	a.writeMu.Lock()
+	defer a.writeMu.Unlock()
 	record, err := a.bundle(poolName, checksum)
 	if err != nil {
 		a.bundleError(w, err)
@@ -376,49 +395,6 @@ func (a *App) downloadFile(w http.ResponseWriter, r *http.Request, poolName, che
 	w.Header().Set("Content-SHA256", expected)
 	w.Header().Set("Accept-Ranges", "bytes")
 	http.ServeContent(w, r, path.Base(filePath), info.ModTime(), file)
-}
-
-func (a *App) tags(w http.ResponseWriter, r *http.Request, poolName, checksum string) {
-	record, err := a.bundle(poolName, checksum)
-	if err != nil {
-		a.bundleError(w, err)
-		return
-	}
-	if r.Method == http.MethodGet {
-		tags := record.Tags.List()
-		w.Header().Set("ETag", record.Revision)
-		writeJSON(w, http.StatusOK, map[string]any{"tags": tags, "total": len(tags)})
-		return
-	}
-	if r.Method != http.MethodPost && r.Method != http.MethodDelete {
-		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method is not allowed")
-		return
-	}
-	if !matchesRevision(r, record.Revision) {
-		writeError(w, http.StatusPreconditionFailed, "stale_revision", "bundle changed; fetch its current ETag and retry")
-		return
-	}
-	var request struct {
-		Tags []string `json:"tags"`
-	}
-	if err := decodeJSON(r, &request); err != nil || len(request.Tags) == 0 {
-		writeError(w, http.StatusBadRequest, "invalid_request", "tags must contain at least one value")
-		return
-	}
-	if r.Method == http.MethodPost {
-		record.Tags.Add(request.Tags...)
-	} else {
-		record.Tags.Remove(request.Tags...)
-	}
-	if err := record.Tags.Save(record.Path); err != nil {
-		writeError(w, http.StatusInternalServerError, "tag_update_failed", err.Error())
-		return
-	}
-	a.invalidateMetadata(poolName)
-	tags := record.Tags.List()
-	revision, _ := revision(record.Path)
-	w.Header().Set("ETag", revision)
-	writeJSON(w, http.StatusOK, map[string]any{"tags": tags, "total": len(tags)})
 }
 
 func (a *App) enqueueVerify(w http.ResponseWriter, r *http.Request, poolName, checksum string) {
