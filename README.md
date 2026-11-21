@@ -79,3 +79,9 @@ Configure recurring work in `schedules` using Go duration intervals. Supported
 actions are `verify` for integrity checks, `collect_status` for pool status
 aggregation, and `cache_metadata` for refreshing the in-memory bundle metadata
 cache. Each action is executed through the server task queue.
+
+The queue runs `server.task_workers` tasks at a time. Further tasks, from
+schedules or from verify requests, wait until a worker is free; the request
+itself returns at once with the queued task. At most 1000 tasks can wait: beyond
+that, verify returns `503` and a schedule logs that it skipped a run. Tasks
+still waiting at shutdown are marked failed.

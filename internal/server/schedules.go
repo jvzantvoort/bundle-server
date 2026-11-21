@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"log"
 	"sort"
 	"sync"
 	"time"
@@ -44,7 +45,7 @@ func (c *metadataCache) remove(pool string) {
 }
 
 func (a *App) enqueueScheduledAction(ctx context.Context, schedule config.ScheduleConfig) {
-	_, _ = a.queue.Enqueue(ctx, "scheduled:"+schedule.Action, func(context.Context) (any, error) {
+	_, err := a.queue.Enqueue(ctx, "scheduled:"+schedule.Action, func(context.Context) (any, error) {
 		pools := a.schedulePools(schedule)
 		results := make(map[string]any, len(pools))
 		for _, pool := range pools {
@@ -56,6 +57,9 @@ func (a *App) enqueueScheduledAction(ctx context.Context, schedule config.Schedu
 		}
 		return map[string]any{"schedule": schedule.Name, "action": schedule.Action, "pools": results}, nil
 	})
+	if err != nil {
+		log.Printf("schedule %s: could not queue %s: %v", schedule.Name, schedule.Action, err)
+	}
 }
 
 func (a *App) schedulePools(schedule config.ScheduleConfig) []string {

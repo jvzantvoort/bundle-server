@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -214,4 +215,45 @@ func request(t *testing.T, handler http.Handler, method, target string, body io.
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(method, target, body))
 	return response
+}
+
+func TestVerifyIsQueuedWhileWorkerIsBusy(t *testing.T) {
+	app, checksum := testApp(t)
+	handler := app.Handler()
+
+	// Occupy the only worker, as a long verify of a large bundle would
+	release := make(chan struct{})
+	running := make(chan struct{})
+	if _, err := app.queue.Enqueue(context.Background(), "busy", func(context.Context) (any, error) {
+		close(running)
+		<-release
+		return nil, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	<-running
+
+	responded := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		responded <- request(t, handler, http.MethodPost, "/api/v1/pools/default/bundles/"+checksum+"/verify", nil)
+	}()
+	select {
+	case response := <-responded:
+		var task taskqueue.Task
+		if err := json.NewDecoder(response.Body).Decode(&task); err != nil {
+			t.Fatal(err)
+		}
+		if response.Code != http.StatusAccepted || task.Status != taskqueue.StatusQueued {
+			t.Fatalf("verify = %d, task %+v; want 202 with a queued task", response.Code, task)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("verify waited for the busy worker")
+	}
+	close(release)
+
+	app.queue.Close()
+	response := request(t, handler, http.MethodPost, "/api/v1/pools/default/bundles/"+checksum+"/verify", nil)
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("verify after Close = %d, want %d", response.Code, http.StatusServiceUnavailable)
+	}
 }
