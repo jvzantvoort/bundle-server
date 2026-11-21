@@ -73,6 +73,16 @@ sudo systemctl enable --now bundle-server
 sudo systemctl status bundle-server
 ```
 
+## Resumable uploads
+
+Upload sessions are stored in the pool root next to their staging directory
+(`.upload-<id>/`, `.upload-<id>.json` and a `.upload-<id>.done` journal of the
+files received), so they survive a restart. Repeating `POST …/uploads` with the
+same `Idempotency-Key` and request body returns the existing session, whose
+`missing_files` lists what still needs to be sent; the same key with a different
+body returns `409`. At startup, expired sessions and partially written files are
+removed. `bundle push` uses this to continue an interrupted push.
+
 ## Scheduled actions
 
 Configure recurring work in `schedules` using Go duration intervals. Supported
