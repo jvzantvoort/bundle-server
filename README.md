@@ -21,6 +21,22 @@ The Swagger UI is available at the configured `server.swagger_path` (default
 `/swagger/`). The OpenAPI document is served at `server.openapi_path` (default
 `/openapi.yaml`).
 
+## Tags
+
+Tags are 1-64 letters, digits, `.`, `_` or `-`, stored in lowercase. Bundle list
+and query results include each bundle's tags. Besides adding and removing tags
+on a bundle (`POST`/`DELETE …/bundles/{checksum}/tags`), the API can:
+
+| Request | Effect |
+| --- | --- |
+| `PUT …/bundles/{checksum}/tags/{tag}` with `{"tag": "new"}` | Rename a tag on one bundle in a single write (needs `If-Match`) |
+| `GET …/pools/{pool}/tags` | List the tags in a pool with the number of bundles for each |
+| `PUT …/pools/{pool}/tags/{tag}` with `{"tag": "new"}` | Rename a tag on every bundle in the pool |
+| `DELETE …/pools/{pool}/tags/{tag}` | Remove a tag from every bundle in the pool |
+
+The pool-wide requests report how many bundles changed and which failed; repeating
+one finishes what a failure left undone.
+
 ## Development
 
 ```bash

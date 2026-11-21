@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Bundle Server API
-  version: 1.0.0
+  version: 1.1.0
   description: |
     HTTP API for storing and querying Bundle content-addressed file bundles.
 
@@ -12,6 +12,12 @@ info:
     To publish a bundle, create an upload session with its manifest, upload every
     declared file, then complete the session. The server verifies file checksums and
     publishes the bundle atomically at `/pools/{pool}/bundles/{checksum}`.
+
+    Changes in 1.1.0: bundle summaries in list and query results include `tags`;
+    a tag can be renamed on one bundle (`PUT …/bundles/{checksum}/tags/{tag}`);
+    `/pools/{pool}/tags` lists the tags of a pool and renames or removes a tag on
+    every bundle at once; adding an invalid tag returns `400` instead of being
+    ignored.
   license:
     name: MIT
     url: https://github.com/jvzantvoort/bundle/blob/main/LICENSE
@@ -224,6 +230,74 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  /pools/{pool}/tags:
+    parameters:
+      - $ref: '#/components/parameters/PoolName'
+    get:
+      tags: [Tags]
+      operationId: listPoolTags
+      summary: List the tags used in a pool
+      description: Every tag in the pool, sorted, with the number of bundles that carry it.
+      responses:
+        '200':
+          description: Tags in the pool.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PoolTags'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /pools/{pool}/tags/{tag}:
+    parameters:
+      - $ref: '#/components/parameters/PoolName'
+      - $ref: '#/components/parameters/TagName'
+    put:
+      tags: [Tags]
+      operationId: renamePoolTag
+      summary: Rename a tag on every bundle in a pool
+      description: |
+        Replaces `tag` with the new tag on every bundle that carries it, each in a
+        single write. A bundle that already has the new tag only loses the old
+        one. Bundles that fail are listed in `failed` and the others are still
+        changed, so repeating the request finishes the job. `changed` is `0` when
+        no bundle carries the tag.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RenameTagRequest'
+      responses:
+        '200':
+          description: Result of the rename.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TagChangeResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Tags]
+      operationId: removePoolTag
+      summary: Remove a tag from every bundle in a pool
+      description: |
+        Removes `tag` from every bundle that carries it. Failures are reported as
+        for a rename.
+      responses:
+        '200':
+          description: Result of the removal.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TagChangeResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
   /pools/{pool}/bundles/{checksum}:
     parameters:
       - $ref: '#/components/parameters/PoolName'
@@ -408,7 +482,9 @@ paths:
       tags: [Tags]
       operationId: addBundleTags
       summary: Add tags to a bundle
-      description: Adds unique tags and returns the complete sorted tag set.
+      description: |
+        Adds unique tags and returns the complete sorted tag set. Tags are stored
+        in lowercase. If any tag is invalid, nothing is added and `400` is returned.
       parameters:
         - $ref: '#/components/parameters/IfMatch'
       requestBody:
@@ -460,6 +536,48 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+
+  /pools/{pool}/bundles/{checksum}/tags/{tag}:
+    parameters:
+      - $ref: '#/components/parameters/PoolName'
+      - $ref: '#/components/parameters/BundleChecksum'
+      - $ref: '#/components/parameters/TagName'
+    put:
+      tags: [Tags]
+      operationId: renameBundleTag
+      summary: Rename a tag on a bundle
+      description: |
+        Replaces `tag` with the new tag in a single write and returns the complete
+        sorted tag set. If the bundle already has the new tag, the old one is only
+        removed.
+      parameters:
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RenameTagRequest'
+      responses:
+        '200':
+          description: Updated tags.
+          headers:
+            ETag:
+              $ref: '#/components/headers/BundleRevision'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tags'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          description: The pool or bundle does not exist, or the bundle does not have the tag.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '412':
           $ref: '#/components/responses/PreconditionFailed'
 
@@ -669,6 +787,12 @@ components:
       required: true
       schema:
         $ref: '#/components/schemas/Checksum'
+    TagName:
+      name: tag
+      in: path
+      required: true
+      schema:
+        $ref: '#/components/schemas/Tag'
     UploadId:
       name: uploadId
       in: path
@@ -680,7 +804,6 @@ components:
       name: filePath
       in: path
       required: true
-      allowReserved: true
       description: Percent-encoded relative path from the bundle root. It must not be absolute or contain `.` or `..` path segments.
       schema:
         $ref: '#/components/schemas/RelativeFilePath'
@@ -774,7 +897,7 @@ components:
       properties:
         api_version:
           type: string
-          const: 1.0.0
+          const: 1.1.0
         server_version:
           type: string
           example: 1.0.0
@@ -858,9 +981,10 @@ components:
 
     Tag:
       type: string
+      description: Stored in lowercase; matching ignores case.
       minLength: 1
       maxLength: 64
-      pattern: '^[^\r\n]+$'
+      pattern: '^[A-Za-z0-9._-]{1,64}$'
       example: travel
 
     Pool:
@@ -935,7 +1059,7 @@ components:
 
     BundleSummary:
       type: object
-      required: [checksum, title, author, created_at, version, file_count, size_bytes, verified]
+      required: [checksum, title, author, created_at, version, file_count, size_bytes, verified, tags]
       properties:
         checksum:
           $ref: '#/components/schemas/Checksum'
@@ -958,22 +1082,23 @@ components:
           format: int64
         verified:
           type: boolean
+        tags:
+          type: array
+          uniqueItems: true
+          description: Sorted tags of the bundle. Added in 1.1.0.
+          items:
+            $ref: '#/components/schemas/Tag'
 
     Bundle:
       allOf:
         - $ref: '#/components/schemas/BundleSummary'
         - type: object
-          required: [metadata, state, tags, revision]
+          required: [metadata, state, revision]
           properties:
             metadata:
               $ref: '#/components/schemas/BundleMetadata'
             state:
               $ref: '#/components/schemas/BundleState'
-            tags:
-              type: array
-              uniqueItems: true
-              items:
-                $ref: '#/components/schemas/Tag'
             revision:
               $ref: '#/components/schemas/BundleRevision'
             links:
@@ -1235,6 +1360,58 @@ components:
         total:
           type: integer
           minimum: 0
+
+    RenameTagRequest:
+      type: object
+      additionalProperties: false
+      required: [tag]
+      properties:
+        tag:
+          $ref: '#/components/schemas/Tag'
+
+    PoolTags:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            required: [tag, bundle_count]
+            properties:
+              tag:
+                $ref: '#/components/schemas/Tag'
+              bundle_count:
+                type: integer
+                minimum: 1
+        total:
+          type: integer
+          minimum: 0
+
+    TagChangeResult:
+      type: object
+      required: [tag, changed, failed]
+      properties:
+        tag:
+          $ref: '#/components/schemas/Tag'
+        new_tag:
+          $ref: '#/components/schemas/Tag'
+        changed:
+          type: integer
+          minimum: 0
+          description: Number of bundles that were changed.
+        failed:
+          type: array
+          items:
+            type: object
+            required: [checksum, code, message]
+            properties:
+              checksum:
+                $ref: '#/components/schemas/Checksum'
+              code:
+                type: string
+              message:
+                type: string
 
     ModifyTagsRequest:
       type: object

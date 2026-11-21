@@ -39,6 +39,7 @@ type bundleSummary struct {
 	FileCount int       `json:"file_count"`
 	SizeBytes int64     `json:"size_bytes"`
 	Verified  bool      `json:"verified"`
+	Tags      []string  `json:"tags"`
 }
 
 func (a *App) bundles(poolName string) ([]bundleRecord, error) {
@@ -127,6 +128,7 @@ func (r bundleRecord) summary() bundleSummary {
 		FileCount: len(r.Files.Records),
 		SizeBytes: r.State.SizeBytes,
 		Verified:  r.State.Verified,
+		Tags:      r.Tags.List(),
 	}
 }
 
