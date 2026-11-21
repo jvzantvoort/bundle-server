@@ -49,7 +49,11 @@ func New(cfg config.Config, queue taskqueue.Queue, spec []byte) (*App, error) {
 		apiURL = strings.TrimRight(cfg.Server.PublicURL, "/") + apiURL
 	}
 	renderedSpec := []byte(strings.ReplaceAll(string(spec), "https://{host}/api/v1", apiURL))
-	return &App{config: cfg, queue: queue, spec: renderedSpec, uploads: newUploadManager(cfg), cache: metadataCache{pools: make(map[string]cacheEntry)}}, nil
+	uploads, err := newUploadManager(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return &App{config: cfg, queue: queue, spec: renderedSpec, uploads: uploads, cache: metadataCache{pools: make(map[string]cacheEntry)}}, nil
 }
 
 func (a *App) Handler() http.Handler {

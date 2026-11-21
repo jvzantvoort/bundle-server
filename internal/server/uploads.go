@@ -4,9 +4,12 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -23,28 +26,36 @@ import (
 )
 
 type uploadManager struct {
-	config  config.Config
-	mu      sync.RWMutex
-	uploads map[string]*upload
+	config config.Config
+	// createMu serializes session creation, so that two requests with the same
+	// Idempotency-Key cannot both create a session
+	createMu sync.Mutex
+	mu       sync.RWMutex
+	uploads  map[string]*upload
+	keys     map[string]string // pool and Idempotency-Key to upload ID
 }
 
 type upload struct {
-	ID        string
-	Pool      string
-	Path      string
-	Checksum  string
-	Metadata  metadata.Metadata
-	Tags      []string
-	Files     map[string]uploadFile
-	CreatedAt time.Time
-	ExpiresAt time.Time
-	Status    string
+	ID          string
+	Pool        string
+	Path        string
+	Checksum    string
+	Key         string
+	RequestHash string
+	Metadata    metadata.Metadata
+	Tags        []string
+	Files       map[string]uploadFile
+	CreatedAt   time.Time
+	ExpiresAt   time.Time
+	Status      string
+	// completing is set while a complete request publishes the upload
+	completing bool
 }
 
 type uploadFile struct {
-	Checksum string
-	Size     int64
-	Uploaded bool
+	Checksum string `json:"checksum"`
+	Size     int64  `json:"size_bytes"`
+	Uploaded bool   `json:"-"`
 }
 
 type createUploadRequest struct {
@@ -61,8 +72,22 @@ type uploadMetadata struct {
 	Version   int       `json:"version"`
 }
 
-func newUploadManager(cfg config.Config) *uploadManager {
-	return &uploadManager{config: cfg, uploads: make(map[string]*upload)}
+const maxIdempotencyKeyLength = 255
+
+// newUploadManager restores the upload sessions stored in the pools.
+func newUploadManager(cfg config.Config) (*uploadManager, error) {
+	m := &uploadManager{config: cfg, uploads: make(map[string]*upload), keys: make(map[string]string)}
+	now := time.Now()
+	for poolName, pool := range cfg.Pools {
+		loaded, err := loadUploads(poolName, pool.Root, now)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load uploads of pool %s: %w", poolName, err)
+		}
+		for _, upload := range loaded {
+			m.register(upload)
+		}
+	}
+	return m, nil
 }
 
 func (a *App) uploadRoutes(w http.ResponseWriter, r *http.Request, poolName, suffix string) {
@@ -87,6 +112,11 @@ func (a *App) uploadRoutes(w http.ResponseWriter, r *http.Request, poolName, suf
 }
 
 func (a *App) createUpload(w http.ResponseWriter, r *http.Request, poolName string) {
+	key := r.Header.Get("Idempotency-Key")
+	if len(key) > maxIdempotencyKeyLength {
+		writeError(w, http.StatusBadRequest, "invalid_request", "Idempotency-Key is too long")
+		return
+	}
 	var request createUploadRequest
 	if err := decodeJSON(r, &request); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", "upload request must be valid JSON")
@@ -100,6 +130,28 @@ func (a *App) createUpload(w http.ResponseWriter, r *http.Request, poolName stri
 		writeError(w, http.StatusUnprocessableEntity, "invalid_checksum", "checksum does not match the manifest")
 		return
 	}
+	requestHash, err := hashRequest(request)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "upload_create_failed", err.Error())
+		return
+	}
+
+	a.uploads.createMu.Lock()
+	defer a.uploads.createMu.Unlock()
+	a.uploads.pruneExpired()
+
+	// A retried request continues the session it created before
+	if key != "" {
+		if id, hash, ok := a.uploads.byKey(poolName, key); ok {
+			if hash != requestHash {
+				writeError(w, http.StatusConflict, "idempotency_key_reused", "Idempotency-Key was used for a different request")
+				return
+			}
+			writeJSON(w, http.StatusCreated, a.uploadResponse(id))
+			return
+		}
+	}
+
 	pool := a.config.Pools[poolName]
 	if _, err := os.Stat(filepath.Join(pool.Root, request.Checksum)); err == nil {
 		writeError(w, http.StatusConflict, "bundle_exists", "bundle already exists in this pool")
@@ -112,14 +164,13 @@ func (a *App) createUpload(w http.ResponseWriter, r *http.Request, poolName stri
 		writeError(w, http.StatusInternalServerError, "upload_create_failed", err.Error())
 		return
 	}
-	staging, err := os.MkdirTemp(pool.Root, ".upload-")
+	id, err := newUploadID()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "upload_create_failed", err.Error())
 		return
 	}
-	id, err := newUploadID()
-	if err != nil {
-		_ = os.RemoveAll(staging)
+	staging := uploadStagingPath(pool.Root, id)
+	if err := os.Mkdir(staging, 0o755); err != nil {
 		writeError(w, http.StatusInternalServerError, "upload_create_failed", err.Error())
 		return
 	}
@@ -128,14 +179,18 @@ func (a *App) createUpload(w http.ResponseWriter, r *http.Request, poolName stri
 		files[file.Path] = uploadFile{Checksum: file.Checksum, Size: file.SizeBytes}
 	}
 	now := time.Now().UTC()
-	a.uploads.mu.Lock()
-	a.uploads.uploads[id] = &upload{
-		ID: id, Pool: poolName, Path: staging, Checksum: request.Checksum,
+	upload := &upload{
+		ID: id, Pool: poolName, Path: staging, Checksum: request.Checksum, Key: key, RequestHash: requestHash,
 		Metadata: metadata.Metadata{Title: request.Metadata.Title, CreatedAt: request.Metadata.CreatedAt, Author: request.Metadata.Author, Version: 2},
 		Tags:     request.Tags, Files: files, CreatedAt: now,
 		ExpiresAt: now.Add(time.Duration(a.config.Server.UploadTTLSeconds) * time.Second), Status: "open",
 	}
-	a.uploads.mu.Unlock()
+	if err := saveSession(pool.Root, upload); err != nil {
+		_ = discardUpload(pool.Root, id)
+		writeError(w, http.StatusInternalServerError, "upload_create_failed", err.Error())
+		return
+	}
+	a.uploads.register(upload)
 	writeJSON(w, http.StatusCreated, a.uploadResponse(id))
 }
 
@@ -148,16 +203,12 @@ func (a *App) getUpload(w http.ResponseWriter, _ *http.Request, poolName, id str
 }
 
 func (a *App) cancelUpload(w http.ResponseWriter, _ *http.Request, poolName, id string) {
-	upload, ok := a.uploads.take(poolName, id)
-	if !ok {
-		writeError(w, http.StatusNotFound, "upload_not_found", "upload does not exist")
+	upload, err := a.uploads.take(poolName, id)
+	if err != nil {
+		a.uploadError(w, err)
 		return
 	}
-	if upload.Status == "complete" {
-		writeError(w, http.StatusConflict, "upload_complete", "completed uploads cannot be cancelled")
-		return
-	}
-	if err := os.RemoveAll(upload.Path); err != nil {
+	if err := discardUpload(a.config.Pools[poolName].Root, upload.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "upload_cancel_failed", err.Error())
 		return
 	}
@@ -195,8 +246,9 @@ func (a *App) uploadFile(w http.ResponseWriter, r *http.Request, poolName, id, r
 	}
 	hash := sha256.New()
 	written, copyErr := io.Copy(io.MultiWriter(file, hash), io.LimitReader(r.Body, upload.Files[filePath].Size+1))
+	syncErr := file.Sync()
 	closeErr := file.Close()
-	if copyErr != nil || closeErr != nil {
+	if copyErr != nil || syncErr != nil || closeErr != nil {
 		_ = os.Remove(target)
 		writeError(w, http.StatusInternalServerError, "upload_write_failed", "could not write upload body")
 		return
@@ -208,54 +260,88 @@ func (a *App) uploadFile(w http.ResponseWriter, r *http.Request, poolName, id, r
 		writeError(w, http.StatusUnprocessableEntity, "checksum_mismatch", "file content does not match the manifest")
 		return
 	}
+	// The journal lets a restarted server know which files it already has
+	if err := journalFile(a.config.Pools[poolName].Root, id, filePath); err != nil {
+		_ = os.Remove(target)
+		writeError(w, http.StatusInternalServerError, "upload_write_failed", err.Error())
+		return
+	}
 	a.uploads.markUploaded(id, filePath)
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (a *App) completeUpload(w http.ResponseWriter, _ *http.Request, poolName, id string) {
+func (a *App) completeUpload(w http.ResponseWriter, r *http.Request, poolName, id string) {
 	upload, err := a.uploads.ready(poolName, id)
+	if errors.Is(err, errUploadComplete) && r.Header.Get("Idempotency-Key") != "" {
+		// A retried complete request gets the bundle it published
+		a.writePublished(w, poolName, upload.Checksum)
+		return
+	}
 	if err != nil {
 		a.uploadError(w, err)
 		return
 	}
-	created, err := bundlelib.Create(upload.Path, upload.Metadata.Title)
-	if err != nil {
-		writeError(w, http.StatusUnprocessableEntity, "bundle_create_failed", err.Error())
+	if status, code, err := a.publishUpload(poolName, upload); err != nil {
+		a.uploads.reopen(id)
+		writeError(w, status, code, err.Error())
 		return
 	}
+	a.uploads.complete(id)
+	removeSession(a.config.Pools[poolName].Root, id)
+	a.invalidateMetadata(poolName)
+	a.writePublished(w, poolName, upload.Checksum)
+}
+
+// publishUpload turns the staging directory into a bundle and moves it into the
+// pool. On failure it returns the HTTP status and error code to report.
+func (a *App) publishUpload(poolName string, upload *upload) (int, string, error) {
+	created, err := bundlelib.Create(upload.Path, upload.Metadata.Title)
+	if err != nil {
+		a.resetStaging(upload)
+		return http.StatusUnprocessableEntity, "bundle_create_failed", err
+	}
 	if created.Metadata.BundleChecksum != upload.Checksum {
-		writeError(w, http.StatusUnprocessableEntity, "checksum_mismatch", "uploaded files do not produce the declared bundle checksum")
-		return
+		a.resetStaging(upload)
+		return http.StatusUnprocessableEntity, "checksum_mismatch", errors.New("uploaded files do not produce the declared bundle checksum")
 	}
 	created.Metadata.Author = upload.Metadata.Author
 	created.Metadata.CreatedAt = upload.Metadata.CreatedAt
 	if err := created.Metadata.Save(upload.Path); err != nil {
-		writeError(w, http.StatusInternalServerError, "bundle_publish_failed", err.Error())
-		return
+		a.resetStaging(upload)
+		return http.StatusInternalServerError, "bundle_publish_failed", err
 	}
 	tags := &tag.Tags{}
 	tags.Add(upload.Tags...)
 	if err := tags.Save(upload.Path); err != nil {
-		writeError(w, http.StatusInternalServerError, "bundle_publish_failed", err.Error())
-		return
+		a.resetStaging(upload)
+		return http.StatusInternalServerError, "bundle_publish_failed", err
 	}
 	destination := filepath.Join(a.config.Pools[poolName].Root, upload.Checksum)
 	if err := os.Rename(upload.Path, destination); err != nil {
+		a.resetStaging(upload)
 		if errors.Is(err, fs.ErrExist) {
-			writeError(w, http.StatusConflict, "bundle_exists", "bundle already exists in this pool")
-			return
+			return http.StatusConflict, "bundle_exists", errors.New("bundle already exists in this pool")
 		}
-		writeError(w, http.StatusInternalServerError, "bundle_publish_failed", err.Error())
-		return
+		return http.StatusInternalServerError, "bundle_publish_failed", err
 	}
-	a.uploads.complete(id)
-	a.invalidateMetadata(poolName)
-	record, err := a.bundle(poolName, upload.Checksum)
+	return 0, "", nil
+}
+
+// resetStaging removes the .bundle directory a failed completion left behind,
+// so that the upload can be completed again.
+func (a *App) resetStaging(upload *upload) {
+	if err := os.RemoveAll(filepath.Join(upload.Path, ".bundle")); err != nil {
+		log.Printf("failed to reset upload %s: %v", upload.ID, err)
+	}
+}
+
+func (a *App) writePublished(w http.ResponseWriter, poolName, bundleChecksum string) {
+	record, err := a.bundle(poolName, bundleChecksum)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "bundle_publish_failed", err.Error())
 		return
 	}
-	w.Header().Set("Location", a.apiPath("/pools/"+poolName+"/bundles/"+upload.Checksum))
+	w.Header().Set("Location", a.apiPath("/pools/"+poolName+"/bundles/"+bundleChecksum))
 	writeJSON(w, http.StatusCreated, a.bundleResponse(poolName, record))
 }
 
@@ -300,6 +386,16 @@ func newUploadID() (string, error) {
 	return hex.EncodeToString(bytes), nil
 }
 
+// hashRequest identifies an upload request, to recognise a retry of it.
+func hashRequest(request createUploadRequest) (string, error) {
+	data, err := json.Marshal(request)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
+}
+
 func (a *App) uploadResponse(id string) map[string]any {
 	a.uploads.mu.RLock()
 	defer a.uploads.mu.RUnlock()
@@ -334,15 +430,74 @@ func (m *uploadManager) belongsTo(pool, id string) bool {
 	return ok && upload.Pool == pool && !expired(upload)
 }
 
-func (m *uploadManager) take(pool, id string) (*upload, bool) {
+func (m *uploadManager) register(upload *upload) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.uploads[upload.ID] = upload
+	if upload.Key != "" {
+		m.keys[upload.Pool+"\x00"+upload.Key] = upload.ID
+	}
+}
+
+// byKey finds the session created with an Idempotency-Key.
+func (m *uploadManager) byKey(pool, key string) (id, requestHash string, ok bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	id, ok = m.keys[pool+"\x00"+key]
+	if !ok {
+		return "", "", false
+	}
+	upload, ok := m.uploads[id]
+	if !ok {
+		return "", "", false
+	}
+	return id, upload.RequestHash, true
+}
+
+// forget removes a session from memory. The caller holds m.mu.
+func (m *uploadManager) forget(upload *upload) {
+	delete(m.uploads, upload.ID)
+	if upload.Key != "" && m.keys[upload.Pool+"\x00"+upload.Key] == upload.ID {
+		delete(m.keys, upload.Pool+"\x00"+upload.Key)
+	}
+}
+
+// pruneExpired drops expired sessions and removes the files of open ones.
+func (m *uploadManager) pruneExpired() {
+	var discard []*upload
+	m.mu.Lock()
+	for _, upload := range m.uploads {
+		if !expired(upload) || upload.completing {
+			continue
+		}
+		m.forget(upload)
+		if upload.Status == "open" {
+			discard = append(discard, upload)
+		}
+	}
+	m.mu.Unlock()
+	for _, upload := range discard {
+		if err := discardUpload(m.config.Pools[upload.Pool].Root, upload.ID); err != nil {
+			log.Printf("failed to remove expired upload %s: %v", upload.ID, err)
+		}
+	}
+}
+
+func (m *uploadManager) take(pool, id string) (*upload, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	upload, ok := m.uploads[id]
 	if !ok || upload.Pool != pool {
-		return nil, false
+		return nil, fs.ErrNotExist
 	}
-	delete(m.uploads, id)
-	return upload, true
+	if upload.Status == "complete" {
+		return nil, errUploadComplete
+	}
+	if upload.completing {
+		return nil, errUploadCompleting
+	}
+	m.forget(upload)
+	return upload, nil
 }
 
 func (m *uploadManager) file(pool, id, filePath string) (*upload, error) {
@@ -358,6 +513,9 @@ func (m *uploadManager) file(pool, id, filePath string) (*upload, error) {
 	if upload.Status != "open" {
 		return nil, errUploadComplete
 	}
+	if upload.completing {
+		return nil, errUploadCompleting
+	}
 	if _, ok := upload.Files[filePath]; !ok {
 		return nil, errUploadFileNotFound
 	}
@@ -367,42 +525,59 @@ func (m *uploadManager) file(pool, id, filePath string) (*upload, error) {
 func (m *uploadManager) markUploaded(id, filePath string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	upload := m.uploads[id]
+	upload, ok := m.uploads[id]
+	if !ok {
+		return
+	}
 	file := upload.Files[filePath]
 	file.Uploaded = true
 	upload.Files[filePath] = file
 }
 
+// ready claims a fully uploaded session for completion. For a completed session
+// it returns the session together with errUploadComplete.
 func (m *uploadManager) ready(pool, id string) (*upload, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	upload, ok := m.uploads[id]
 	if !ok || upload.Pool != pool {
 		return nil, fs.ErrNotExist
 	}
+	if upload.Status == "complete" {
+		return upload, errUploadComplete
+	}
 	if expired(upload) {
 		return nil, errUploadExpired
 	}
-	if upload.Status == "complete" {
-		return nil, errUploadComplete
+	if upload.completing {
+		return nil, errUploadCompleting
 	}
 	for _, file := range upload.Files {
 		if !file.Uploaded {
 			return nil, errUploadIncomplete
 		}
 	}
+	upload.completing = true
 	return upload, nil
+}
+
+func (m *uploadManager) reopen(id string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.uploads[id].completing = false
 }
 
 func (m *uploadManager) complete(id string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.uploads[id].completing = false
 	m.uploads[id].Status = "complete"
 }
 
 var (
 	errUploadExpired      = errors.New("upload has expired")
 	errUploadComplete     = errors.New("upload is complete")
+	errUploadCompleting   = errors.New("upload is being completed")
 	errUploadIncomplete   = errors.New("upload has missing files")
 	errUploadFileNotFound = errors.New("file is not declared in the manifest")
 )
@@ -419,6 +594,8 @@ func (a *App) uploadError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "upload_incomplete", err.Error())
 	case errors.Is(err, errUploadComplete):
 		writeError(w, http.StatusConflict, "upload_complete", err.Error())
+	case errors.Is(err, errUploadCompleting):
+		writeError(w, http.StatusConflict, "upload_completing", err.Error())
 	case errors.Is(err, errUploadExpired):
 		writeError(w, http.StatusConflict, "upload_expired", err.Error())
 	case errors.Is(err, errUploadFileNotFound):
