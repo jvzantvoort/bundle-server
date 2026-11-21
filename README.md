@@ -21,6 +21,14 @@ The Swagger UI is available at the configured `server.swagger_path` (default
 `/swagger/`). The OpenAPI document is served at `server.openapi_path` (default
 `/openapi.yaml`).
 
+## API specification
+
+`openapi.yaml` here is the canonical API description. The bundle CLI
+([bundle](https://github.com/jvzantvoort/bundle)) and the web UI
+([bundle-ui](https://github.com/jvzantvoort/bundle-ui)) each keep a copy, and
+their OpenAPI workflow fails when it differs from this file on `main`. After an
+API change is merged, run `scripts/sync-openapi.sh` in both repositories.
+
 ## Development
 
 ```bash
