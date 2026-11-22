@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -82,6 +83,19 @@ func TestBundleMedia(t *testing.T) {
 	}
 	if response := request(t, handler, http.MethodPost, base+"/media", nil); response.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("POST media = %d, want 405", response.Code)
+	}
+
+	// bundle-python before its fix wrote NaN for 0/0 EXIF rationals
+	nan := strings.Replace(testMedia, `"ISO": 100`, `"ISO": 100, "LensSpecification": [16.0, 35.0, NaN, NaN]`, 1)
+	if err := os.WriteFile(filepath.Join(bundlePath, ".bundle", media.FileName), []byte(nan), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var withNaN mediaFile
+	if response := call(t, handler, http.MethodGet, base+"/media/hello.txt", "", "", &withNaN); response.Code != http.StatusOK {
+		t.Fatalf("media with NaN status = %d", response.Code)
+	}
+	if lens, _ := withNaN.EXIF["LensSpecification"].([]any); len(lens) != 4 || lens[2] != nil {
+		t.Fatalf("LensSpecification = %v, want NaN read as null", withNaN.EXIF["LensSpecification"])
 	}
 
 	if err := os.WriteFile(filepath.Join(bundlePath, ".bundle", media.FileName), []byte("{"), 0o644); err != nil {
