@@ -1,6 +1,7 @@
 package server
 
 import (
+	"github.com/jvzantvoort/bundle/media"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -42,7 +43,7 @@ func TestBundleMedia(t *testing.T) {
 	}
 
 	bundlePath := filepath.Join(app.config.Pools["default"].Root, checksum)
-	if err := os.WriteFile(filepath.Join(bundlePath, ".bundle", mediaFileName), []byte(testMedia), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(bundlePath, ".bundle", media.FileName), []byte(testMedia), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -83,7 +84,7 @@ func TestBundleMedia(t *testing.T) {
 		t.Fatalf("POST media = %d, want 405", response.Code)
 	}
 
-	if err := os.WriteFile(filepath.Join(bundlePath, ".bundle", mediaFileName), []byte("{"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(bundlePath, ".bundle", media.FileName), []byte("{"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if response := request(t, handler, http.MethodGet, base+"/media", nil); response.Code != http.StatusInternalServerError {

@@ -65,10 +65,11 @@ one finishes what a failure left undone.
 
 ## Media metadata
 
-[bundle-python](https://github.com/jvzantvoort/bundle-python) `scan` stores the EXIF
-data, resolution, capture time, GPS position and device of a bundle's images and
-videos in `.bundle/MEDIA.json`. That file is outside the bundle checksum, and the
-server only reads it:
+`bundle update --media` (bundle v0.5.0 and later) and
+[bundle-python](https://github.com/jvzantvoort/bundle-python) `scan` store the
+EXIF data, resolution, capture time, GPS position and device of a bundle's images
+and videos in `.bundle/MEDIA.json`. That file is outside the bundle checksum, and
+the server only reads it, with the bundle library's `media` package:
 
 | Request | Returns |
 | --- | --- |
