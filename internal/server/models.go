@@ -133,6 +133,14 @@ func (r bundleRecord) summary() bundleSummary {
 }
 
 func (a *App) bundleResponse(poolName string, r bundleRecord) map[string]any {
+	base := "/pools/" + poolName + "/bundles/" + r.Metadata.BundleChecksum
+	links := map[string]string{
+		"self":  a.apiPath(base),
+		"files": a.apiPath(base + "/files"),
+	}
+	if hasMedia(r.Path) {
+		links["media"] = a.apiPath(base + "/media")
+	}
 	return map[string]any{
 		"checksum":   r.Metadata.BundleChecksum,
 		"title":      r.Metadata.Title,
@@ -156,10 +164,7 @@ func (a *App) bundleResponse(poolName string, r bundleRecord) map[string]any {
 		},
 		"tags":     r.Tags.List(),
 		"revision": r.Revision,
-		"links": map[string]string{
-			"self":  a.apiPath("/pools/" + poolName + "/bundles/" + r.Metadata.BundleChecksum),
-			"files": a.apiPath("/pools/" + poolName + "/bundles/" + r.Metadata.BundleChecksum + "/files"),
-		},
+		"links":    links,
 	}
 }
 

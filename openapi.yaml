@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Bundle Server API
-  version: 1.1.0
+  version: 1.2.0
   description: |
     HTTP API for storing and querying Bundle content-addressed file bundles.
 
@@ -18,6 +18,11 @@ info:
     `/pools/{pool}/tags` lists the tags of a pool and renames or removes a tag on
     every bundle at once; adding an invalid tag returns `400` instead of being
     ignored.
+
+    Changes in 1.2.0: `/pools/{pool}/bundles/{checksum}/media` returns the media
+    metadata (EXIF data, resolution, capture time, GPS and device) that
+    `bundle-python scan` stores in `.bundle/MEDIA.json`, and a bundle's `links`
+    include `media` when it has that file. The server only reads it.
   license:
     name: MIT
     url: https://github.com/jvzantvoort/bundle/blob/main/LICENSE
@@ -34,6 +39,7 @@ tags:
   - name: Pools
   - name: Bundles
   - name: Files
+  - name: Media
   - name: Tags
   - name: Uploads
   - name: Statistics
@@ -437,6 +443,71 @@ paths:
               schema:
                 type: string
                 example: bytes */157286400
+
+  /pools/{pool}/bundles/{checksum}/media:
+    parameters:
+      - $ref: '#/components/parameters/PoolName'
+      - $ref: '#/components/parameters/BundleChecksum'
+    get:
+      tags: [Media]
+      operationId: getBundleMedia
+      summary: Get the media metadata of all files in a bundle
+      description: |
+        Returns what `bundle-python scan` stored in `.bundle/MEDIA.json`: the
+        devices that made the files and, per media file, its type, resolution,
+        capture time, device and GPS position. EXIF data is left out here; get a
+        single file for it. `.bundle/` is outside the bundle checksum, so this
+        never changes a bundle's identity, and the server never writes it.
+      responses:
+        '200':
+          description: Media metadata of the bundle, files sorted by path.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MediaIndex'
+        '404':
+          description: The bundle does not exist (`bundle_not_found`) or has no media metadata (`media_not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: '`MEDIA.json` cannot be read or parsed (`media_read_failed`).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /pools/{pool}/bundles/{checksum}/media/{filePath}:
+    parameters:
+      - $ref: '#/components/parameters/PoolName'
+      - $ref: '#/components/parameters/BundleChecksum'
+      - $ref: '#/components/parameters/FilePath'
+    get:
+      tags: [Media]
+      operationId: getBundleFileMedia
+      summary: Get the media metadata of one file, including EXIF data
+      responses:
+        '200':
+          description: Media metadata of the file.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MediaFile'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          description: The bundle does not exist, or there is no media metadata for the file (`media_not_found`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: '`MEDIA.json` cannot be read or parsed (`media_read_failed`).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
   /pools/{pool}/bundles/{checksum}/verify:
     parameters:
@@ -1112,6 +1183,10 @@ components:
                 files:
                   type: string
                   format: uri-reference
+                media:
+                  type: string
+                  format: uri-reference
+                  description: Present only when the bundle has media metadata.
 
     BundlePage:
       type: object
@@ -1130,6 +1205,96 @@ components:
         total:
           type: integer
           minimum: 0
+
+    MediaDevice:
+      type: object
+      description: A camera, phone or other device, as recorded in the file.
+      properties:
+        make:
+          type: string
+        model:
+          type: string
+        lens:
+          type: string
+        software:
+          type: string
+        files:
+          type: integer
+          minimum: 1
+          description: Number of files made with the device (in `MediaIndex.devices` only).
+
+    MediaFile:
+      type: object
+      required: [path, type]
+      properties:
+        path:
+          $ref: '#/components/schemas/RelativeFilePath'
+        type:
+          type: string
+          enum: [image, video]
+        format:
+          type: string
+          description: Image format, for example `JPEG`.
+        resolution:
+          type: object
+          description: Displayed size; EXIF orientation is applied.
+          properties:
+            width:
+              type: [integer, 'null']
+            height:
+              type: [integer, 'null']
+        taken_at:
+          type: string
+          description: Capture time as recorded in the file (EXIF `YYYY:MM:DD HH:MM:SS` or ISO 8601), without normalisation.
+        device:
+          $ref: '#/components/schemas/MediaDevice'
+        gps:
+          type: object
+          required: [latitude, longitude]
+          properties:
+            latitude:
+              type: number
+            longitude:
+              type: number
+        duration_seconds:
+          type: number
+          description: Videos only.
+        codec:
+          type: string
+          description: Video codec, videos only.
+        sha256:
+          type: string
+          description: Checksum of the file when it was scanned.
+        exif:
+          type: object
+          additionalProperties: true
+          description: All EXIF tags by name. Only returned for a single file.
+
+    MediaIndex:
+      type: object
+      required: [version, devices, file_count, files]
+      properties:
+        version:
+          type: integer
+          description: Schema version of `MEDIA.json`.
+        generator:
+          type: string
+          example: bundle-python 0.1.0
+        updated_at:
+          type: string
+          format: date-time
+        devices:
+          type: array
+          description: Distinct devices, most used first.
+          items:
+            $ref: '#/components/schemas/MediaDevice'
+        file_count:
+          type: integer
+          minimum: 0
+        files:
+          type: array
+          items:
+            $ref: '#/components/schemas/MediaFile'
 
     FilePage:
       type: object

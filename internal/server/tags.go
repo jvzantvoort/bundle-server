@@ -10,7 +10,7 @@ import (
 )
 
 // apiVersion is the version of openapi.yaml this server implements.
-const apiVersion = "1.1.0"
+const apiVersion = "1.2.0"
 
 type tagsResponse struct {
 	Tags  []string `json:"tags"`

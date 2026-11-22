@@ -251,6 +251,8 @@ func (a *App) bundleRoutes(w http.ResponseWriter, r *http.Request, poolName, suf
 		default:
 			writeError(w, http.StatusNotFound, "not_found", "resource does not exist")
 		}
+	case "media":
+		a.mediaRoutes(w, r, poolName, checksum, parts[2:])
 	case "verify":
 		if r.Method != http.MethodPost {
 			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method is not allowed")
