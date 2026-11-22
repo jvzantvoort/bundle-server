@@ -3,7 +3,7 @@ module github.com/jvzantvoort/bundle-server
 go 1.24.5
 
 require (
-	github.com/jvzantvoort/bundle v0.5.0
+	github.com/jvzantvoort/bundle v0.5.1
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.21.0
 )
