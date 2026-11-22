@@ -63,6 +63,21 @@ on a bundle (`POST`/`DELETE …/bundles/{checksum}/tags`), the API can:
 The pool-wide requests report how many bundles changed and which failed; repeating
 one finishes what a failure left undone.
 
+## Media metadata
+
+[bundle-python](https://github.com/jvzantvoort/bundle-python) `scan` stores the EXIF
+data, resolution, capture time, GPS position and device of a bundle's images and
+videos in `.bundle/MEDIA.json`. That file is outside the bundle checksum, and the
+server only reads it:
+
+| Request | Returns |
+| --- | --- |
+| `GET …/bundles/{checksum}/media` | Devices with file counts, and every media file without its EXIF data |
+| `GET …/bundles/{checksum}/media/{filePath}` | One file, including all EXIF tags |
+
+Both return `404` with code `media_not_found` when there is no media metadata. A
+bundle's `links.media` is only present when it has `MEDIA.json`.
+
 ## systemd deployment
 
 Build the production binary, install its runtime files, and create the
