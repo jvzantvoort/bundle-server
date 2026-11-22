@@ -47,6 +47,11 @@ current Go.
 `bundle-server config validate --config config.yaml` validates the server
 configuration before startup.
 
+`bundle-server --version` shows the build: the release tag and commit for a
+release binary, and the module version for `go install`. The server logs it at
+startup and reports it as `server_version` in `GET /api/v1/capabilities`, so
+you can see which build a running server is.
+
 ## Tags
 
 Tags are 1-64 letters, digits, `.`, `_` or `-`, stored in lowercase. Bundle list

@@ -29,6 +29,7 @@ var swaggerHTML []byte
 
 type App struct {
 	config  config.Config
+	version string
 	queue   taskqueue.Queue
 	spec    []byte
 	uploads *uploadManager
@@ -57,7 +58,7 @@ func New(cfg config.Config, queue taskqueue.Queue, spec []byte) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &App{config: cfg, queue: queue, spec: renderedSpec, uploads: uploads, cache: metadataCache{pools: make(map[string]cacheEntry)}}, nil
+	return &App{config: cfg, version: "dev", queue: queue, spec: renderedSpec, uploads: uploads, cache: metadataCache{pools: make(map[string]cacheEntry)}}, nil
 }
 
 func (a *App) Handler() http.Handler {
@@ -83,6 +84,14 @@ func (a *App) Handler() http.Handler {
 		}
 		mux.ServeHTTP(w, r)
 	})
+}
+
+// SetVersion sets the server version that /capabilities reports. It
+// defaults to "dev".
+func (a *App) SetVersion(version string) {
+	if version != "" {
+		a.version = version
+	}
 }
 
 func (a *App) apiPath(suffix string) string {
@@ -136,7 +145,7 @@ func (a *App) serveBundleFile(w http.ResponseWriter, r *http.Request, poolName, 
 func (a *App) capabilities(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"api_version":         apiVersion,
-		"server_version":      "dev",
+		"server_version":      a.version,
 		"bundle_versions":     []int{2},
 		"checksum_algorithms": []string{"sha256"},
 		"upload_limits": map[string]any{

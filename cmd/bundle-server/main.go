@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"syscall"
 	"time"
 
@@ -17,10 +18,31 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// version and revision are set at build time with -ldflags.
+var version string
+var revision string
+
+// versionString returns the version set at build time. Binaries from go install
+// have no build flags, so it falls back to the module version.
+func versionString() string {
+	current := version
+	if current == "" {
+		current = "dev"
+		if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+			current = info.Main.Version
+		}
+	}
+	if revision != "" {
+		current += " (" + revision + ")"
+	}
+	return current
+}
+
 func main() {
 	root := &cobra.Command{
-		Use:   "bundle-server",
-		Short: "Serve and manage Bundle pools",
+		Use:     "bundle-server",
+		Short:   "Serve and manage Bundle pools",
+		Version: versionString(),
 	}
 	root.AddCommand(newServeCommand(), newConfigCommand())
 	if err := root.Execute(); err != nil {
@@ -48,6 +70,7 @@ func newServeCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			app.SetVersion(versionString())
 			schedules, err := app.StartSchedules(context.Background())
 			if err != nil {
 				return fmt.Errorf("start schedules: %w", err)
@@ -69,7 +92,7 @@ func newServeCommand() *cobra.Command {
 					log.Printf("shutdown failed: %v", err)
 				}
 			}()
-			log.Printf("Bundle server listening on %s", cfg.Server.Address)
+			log.Printf("Bundle server %s listening on %s", versionString(), cfg.Server.Address)
 			err = httpServer.ListenAndServe()
 			if errors.Is(err, http.ErrServerClosed) {
 				return nil

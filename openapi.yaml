@@ -968,10 +968,13 @@ components:
       properties:
         api_version:
           type: string
-          const: 1.1.0
+          const: 1.2.0
         server_version:
           type: string
-          example: 1.0.0
+          description: |
+            Release tag and commit of the server build, or the module version
+            for `go install` builds without a tag; `dev` for a local build.
+          example: v0.3.1 (23c9427)
         bundle_versions:
           type: array
           minItems: 1

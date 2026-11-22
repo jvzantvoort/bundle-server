@@ -228,3 +228,20 @@ func TestCapabilitiesReportAPIVersion(t *testing.T) {
 		t.Fatalf("api_version = %q, want %q", capabilities.APIVersion, apiVersion)
 	}
 }
+
+func TestCapabilitiesReportServerVersion(t *testing.T) {
+	app, _ := testApp(t)
+	var capabilities struct {
+		ServerVersion string `json:"server_version"`
+	}
+	call(t, app.Handler(), http.MethodGet, "/api/v1/capabilities", "", "", &capabilities)
+	if capabilities.ServerVersion != "dev" {
+		t.Fatalf("default server_version = %q, want dev", capabilities.ServerVersion)
+	}
+	app.SetVersion("v1.2.3 (abc1234)")
+	app.SetVersion("") // an empty version keeps the current one
+	call(t, app.Handler(), http.MethodGet, "/api/v1/capabilities", "", "", &capabilities)
+	if capabilities.ServerVersion != "v1.2.3 (abc1234)" {
+		t.Fatalf("server_version = %q, want the set version", capabilities.ServerVersion)
+	}
+}
