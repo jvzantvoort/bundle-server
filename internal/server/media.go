@@ -1,114 +1,66 @@
 package server
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/jvzantvoort/bundle/media"
 )
 
-// mediaFileName is the file in which bundle-python stores the media metadata
-// (EXIF, resolution, capture time, GPS, device) of a bundle's files. It lives
-// in .bundle/, outside the bundle checksum, so it never changes a bundle's
-// identity. The server only reads it.
-const mediaFileName = "MEDIA.json"
+// The media metadata of a bundle's files (EXIF, resolution, capture time,
+// GPS, device) is stored in .bundle/MEDIA.json by `bundle update --media` or
+// bundle-python. It lives outside the bundle checksum, so it never changes a
+// bundle's identity. The server only reads it.
 
-// maxMediaBytes bounds how much of MEDIA.json the server reads.
+// maxMediaBytes bounds the size of MEDIA.json the server reads.
 const maxMediaBytes = 64 << 20
 
-type mediaResolution struct {
-	Width  *int `json:"width"`
-	Height *int `json:"height"`
-}
-
-type mediaGPS struct {
-	Latitude  float64 `json:"latitude"`
-	Longitude float64 `json:"longitude"`
-}
-
-type mediaDevice struct {
-	Make     string `json:"make,omitempty"`
-	Model    string `json:"model,omitempty"`
-	Lens     string `json:"lens,omitempty"`
-	Software string `json:"software,omitempty"`
-	Files    int    `json:"files,omitempty"`
-}
-
+// mediaFile is one file of the media metadata in an API response: the
+// stored entry with its path.
 type mediaFile struct {
-	Path            string           `json:"path"`
-	Type            string           `json:"type"`
-	Format          string           `json:"format,omitempty"`
-	Resolution      *mediaResolution `json:"resolution,omitempty"`
-	TakenAt         string           `json:"taken_at,omitempty"`
-	Device          *mediaDevice     `json:"device,omitempty"`
-	GPS             *mediaGPS        `json:"gps,omitempty"`
-	DurationSeconds *float64         `json:"duration_seconds,omitempty"`
-	Codec           string           `json:"codec,omitempty"`
-	SHA256          string           `json:"sha256,omitempty"`
-	EXIF            map[string]any   `json:"exif,omitempty"`
-}
-
-type mediaDocument struct {
-	Version   int                  `json:"version"`
-	Generator string               `json:"generator"`
-	UpdatedAt string               `json:"updated_at"`
-	Devices   []mediaDevice        `json:"devices"`
-	Files     map[string]mediaFile `json:"files"`
+	Path string `json:"path"`
+	media.File
 }
 
 type mediaIndex struct {
-	Version   int           `json:"version"`
-	Generator string        `json:"generator"`
-	UpdatedAt string        `json:"updated_at"`
-	Devices   []mediaDevice `json:"devices"`
-	FileCount int           `json:"file_count"`
-	Files     []mediaFile   `json:"files"`
-}
-
-func mediaPath(bundlePath string) string {
-	return filepath.Join(bundlePath, ".bundle", mediaFileName)
+	Version   int            `json:"version"`
+	Generator string         `json:"generator"`
+	UpdatedAt string         `json:"updated_at"`
+	Devices   []media.Device `json:"devices"`
+	FileCount int            `json:"file_count"`
+	Files     []mediaFile    `json:"files"`
 }
 
 func hasMedia(bundlePath string) bool {
-	info, err := os.Stat(mediaPath(bundlePath))
+	info, err := os.Stat(media.Path(bundlePath))
 	return err == nil && info.Mode().IsRegular()
 }
 
-// loadMedia reads MEDIA.json of a bundle. It returns fs.ErrNotExist when the
-// bundle has none.
-func loadMedia(bundlePath string) (mediaDocument, error) {
-	var doc mediaDocument
-	file, err := os.Open(mediaPath(bundlePath))
+// loadMedia reads MEDIA.json of a bundle, with paths normalized to the
+// manifest's form. It returns fs.ErrNotExist when the bundle has none.
+func loadMedia(bundlePath string) (*media.Document, error) {
+	info, err := os.Stat(media.Path(bundlePath))
 	if err != nil {
-		return doc, err
+		return nil, err
 	}
-	defer file.Close()
-	content, err := io.ReadAll(io.LimitReader(file, maxMediaBytes+1))
+	if info.Size() > maxMediaBytes {
+		return nil, fmt.Errorf("%s is larger than %d bytes", media.FileName, maxMediaBytes)
+	}
+	doc, err := media.Load(bundlePath)
 	if err != nil {
-		return doc, err
+		return nil, err
 	}
-	if len(content) > maxMediaBytes {
-		return doc, fmt.Errorf("%s is larger than %d bytes", mediaFileName, maxMediaBytes)
-	}
-	if err := json.Unmarshal(content, &doc); err != nil {
-		return doc, fmt.Errorf("parse %s: %w", mediaFileName, err)
-	}
-	files := make(map[string]mediaFile, len(doc.Files))
+	files := make(map[string]media.File, len(doc.Files))
 	for key, entry := range doc.Files {
-		key = strings.TrimPrefix(filepath.ToSlash(key), "./")
-		entry.Path = key
-		files[key] = entry
+		files[strings.TrimPrefix(filepath.ToSlash(key), "./")] = entry
 	}
 	doc.Files = files
-	if doc.Devices == nil {
-		doc.Devices = []mediaDevice{}
-	}
 	return doc, nil
 }
 
@@ -124,7 +76,7 @@ func (a *App) mediaRoutes(w http.ResponseWriter, r *http.Request, poolName, chec
 	}
 	doc, err := loadMedia(record.Path)
 	if errors.Is(err, fs.ErrNotExist) {
-		writeError(w, http.StatusNotFound, "media_not_found", "bundle has no media metadata; run 'bundle-python scan' on it")
+		writeError(w, http.StatusNotFound, "media_not_found", "bundle has no media metadata; run 'bundle update --media' on it")
 		return
 	}
 	if err != nil {
@@ -145,16 +97,16 @@ func (a *App) mediaRoutes(w http.ResponseWriter, r *http.Request, poolName, chec
 		writeError(w, http.StatusNotFound, "media_not_found", "no media metadata for this file")
 		return
 	}
-	writeJSON(w, http.StatusOK, entry)
+	writeJSON(w, http.StatusOK, mediaFile{Path: filePath, File: entry})
 }
 
 // mediaSummary lists every file without its EXIF data, which can be large;
 // the per-file request returns it.
-func mediaSummary(doc mediaDocument) mediaIndex {
+func mediaSummary(doc *media.Document) mediaIndex {
 	files := make([]mediaFile, 0, len(doc.Files))
-	for _, entry := range doc.Files {
+	for path, entry := range doc.Files {
 		entry.EXIF = nil
-		files = append(files, entry)
+		files = append(files, mediaFile{Path: path, File: entry})
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
 	return mediaIndex{
